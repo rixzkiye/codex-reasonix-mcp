@@ -321,6 +321,7 @@ export class ReasonixProcess {
       roots[0] !== canonicalWorktree ||
       status.sandbox.mode !== 'enforce' ||
       status.sandbox.engine !== expectedEngine ||
+      !status.sandbox.available ||
       status.sandbox.networkEnabled !== networkEnabled
     ) {
       throw new BridgeError(
@@ -334,6 +335,7 @@ export class ReasonixProcess {
           workspaceRoot: status.sandbox.workspaceRoot,
           writeRoots: status.sandbox.writeRoots,
           sandboxEngine: status.sandbox.engine,
+          sandboxAvailable: status.sandbox.available,
           networkEnabled: status.sandbox.networkEnabled,
         },
       );

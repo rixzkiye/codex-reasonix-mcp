@@ -54,6 +54,7 @@ export const reasonixStatusSchema = z
       .object({
         mode: z.literal('enforce'),
         engine: z.enum(['bubblewrap', 'seatbelt']),
+        available: z.boolean(),
         workspaceRoot: z.string().min(1),
         writeRoots: z.array(z.string()),
         networkEnabled: z.boolean(),

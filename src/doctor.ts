@@ -21,6 +21,19 @@ export interface DoctorReport {
   checks: DoctorCheck[];
 }
 
+const supervisorFlags = ['--planner', '--sandbox-network', '--workspace-only', '--sandbox-bash'];
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+export function missingSupervisorFlags(helpText: string): string[] {
+  return supervisorFlags.filter((flag) => {
+    const name = escapeRegExp(flag.replace(/^-+/, ''));
+    return !new RegExp(`(?:^|\\s)-{1,2}${name}(?=\\s|=|$)`, 'm').test(helpText);
+  });
+}
+
 async function isWsl(): Promise<boolean> {
   if (process.platform !== 'linux') return false;
   try {
@@ -106,8 +119,7 @@ export async function runDoctor(config: BridgeConfig): Promise<DoctorReport> {
     timeoutMs: 10_000,
   }).catch((error: unknown) => ({ exitCode: null, stdout: '', stderr: String(error) }));
   const helpText = `${help.stdout}\n${help.stderr}`;
-  const supervisorFlags = ['--planner', '--sandbox-network', '--workspace-only', '--sandbox-bash'];
-  const missingFlags = supervisorFlags.filter((flag) => !helpText.includes(flag));
+  const missingFlags = missingSupervisorFlags(helpText);
   checks.push({
     name: 'supervisor_flags',
     ok: missingFlags.length === 0,

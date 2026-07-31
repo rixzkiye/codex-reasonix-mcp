@@ -122,6 +122,7 @@ function status(sessionId: string) {
     sandbox: {
       mode: 'enforce' as const,
       engine: process.platform === 'darwin' ? ('seatbelt' as const) : ('bubblewrap' as const),
+      available: true,
       workspaceRoot: session.cwd,
       writeRoots: [session.cwd],
       networkEnabled: configuredNetwork,
