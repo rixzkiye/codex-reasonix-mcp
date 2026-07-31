@@ -177,6 +177,7 @@ export class BridgeRuntime {
   private readonly taskProcesses = new Map<string, ReasonixProcess>();
   private readonly interactions = new Map<string, PendingInteraction>();
   private readonly leases = new Map<string, RepositoryLease>();
+  private readonly leaseAcquisitions = new Map<string, Promise<RepositoryLease>>();
   private readonly finalizationAbort = new Map<string, AbortController>();
   private readonly finalizationTasks = new Map<string, Promise<void>>();
 
@@ -210,13 +211,30 @@ export class BridgeRuntime {
       existing.tasks.add(taskId);
       return;
     }
-    const lease = await acquireLease(
-      this.store.locksDir(),
-      `repo-${repository.id}`,
-      this.config.leaseStaleMs,
-      this.config.leaseHeartbeatMs,
-    );
-    this.leases.set(repository.id, { lease, tasks: new Set([taskId]) });
+
+    let acquisition = this.leaseAcquisitions.get(repository.id);
+    if (!acquisition) {
+      acquisition = acquireLease(
+        this.store.locksDir(),
+        `repo-${repository.id}`,
+        this.config.leaseStaleMs,
+        this.config.leaseHeartbeatMs,
+      ).then((lease) => {
+        const held = { lease, tasks: new Set<string>() };
+        this.leases.set(repository.id, held);
+        return held;
+      });
+      this.leaseAcquisitions.set(repository.id, acquisition);
+    }
+
+    try {
+      const held = await acquisition;
+      held.tasks.add(taskId);
+    } finally {
+      if (this.leaseAcquisitions.get(repository.id) === acquisition) {
+        this.leaseAcquisitions.delete(repository.id);
+      }
+    }
   }
 
   private async releaseLease(repositoryId: string, taskId: string): Promise<void> {
@@ -1106,6 +1124,8 @@ export class BridgeRuntime {
     this.interactions.clear();
     await Promise.allSettled(this.finalizationTasks.values());
     await this.pool.shutdown();
+    await Promise.allSettled(this.leaseAcquisitions.values());
+    this.leaseAcquisitions.clear();
     await Promise.all([...this.leases.values()].map(async (held) => await held.lease.release()));
     this.leases.clear();
   }
