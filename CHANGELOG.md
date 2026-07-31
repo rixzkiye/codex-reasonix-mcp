@@ -2,6 +2,14 @@
 
 All notable changes are documented here. Versions follow Semantic Versioning.
 
+## [0.1.0-rc.2] - 2026-07-31
+
+### Fixed
+
+- Resolve the installed npm bin symlink before detecting CLI invocation, so
+  `serve`, `doctor`, and `version` execute correctly through `npx` and
+  `node_modules/.bin`.
+
 ## [0.1.0-rc.1] - 2026-07-31
 
 ### Added

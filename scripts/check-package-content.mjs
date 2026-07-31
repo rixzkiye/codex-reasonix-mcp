@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -57,6 +58,24 @@ for (const required of [
 const unpackedSize = Number(report[0].unpackedSize ?? 0);
 if (!Number.isSafeInteger(unpackedSize) || unpackedSize <= 0 || unpackedSize > 10 * 1024 * 1024) {
   throw new Error(`Unexpected unpacked npm package size: ${String(unpackedSize)}`);
+}
+
+const smokeRoot = mkdtempSync(path.join(os.tmpdir(), 'codex-reasonix-package-bin-'));
+try {
+  const binPath = path.join(smokeRoot, 'codex-reasonix-mcp');
+  symlinkSync(path.join(root, 'dist', 'index.js'), binPath);
+  const binVersion = execFileSync(process.execPath, [binPath, 'version'], {
+    cwd: smokeRoot,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'inherit'],
+  }).trim();
+  if (binVersion !== manifest.version) {
+    throw new Error(
+      `Packaged CLI bin reported ${binVersion || '<empty>'}; expected ${String(manifest.version)}`,
+    );
+  }
+} finally {
+  rmSync(smokeRoot, { recursive: true, force: true });
 }
 
 process.stdout.write(
