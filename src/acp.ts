@@ -29,6 +29,7 @@ import {
   type ReasonixStatusUpdate,
 } from './reasonix-status.js';
 import type { RepositoryIdentity } from './types.js';
+import { VERSION } from './version.js';
 
 export interface ReasonixCallbacks {
   onPermission(params: RequestPermissionRequest): Promise<RequestPermissionResponse>;
@@ -196,7 +197,7 @@ export class ReasonixProcess {
     try {
       initialized = await connection.agent.request(acp.methods.agent.initialize, {
         protocolVersion: acp.PROTOCOL_VERSION,
-        clientInfo: { name: 'codex-reasonix-mcp', version: '0.1.0-rc.1' },
+        clientInfo: { name: 'codex-reasonix-mcp', version: VERSION },
         clientCapabilities: {},
       });
     } catch (error) {

@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 import process from 'node:process';
-import { pathToFileURL } from 'node:url';
 
+import { isCliEntrypoint } from './cli-entrypoint.js';
 import { loadConfig } from './config.js';
 import { runDoctor } from './doctor.js';
 import { BridgeRuntime } from './runtime.js';
@@ -42,8 +42,7 @@ async function main(): Promise<void> {
   await serveStdio(runtime);
 }
 
-const isEntrypoint = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
-if (isEntrypoint) {
+if (isCliEntrypoint(import.meta.url, process.argv[1])) {
   main().catch((error: unknown) => {
     process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`);
     process.exitCode = 1;
