@@ -22,7 +22,7 @@ Example registration with an external scanner:
 codex mcp add reasonix-worker \
   --env REASONIX_BIN=/opt/reasonix/bin/reasonix \
   --env CODEX_REASONIX_SECRET_SCANNER_ARGV='["secret-scanner","scan"]' \
-  -- npx -y codex-reasonix-mcp@0.1.0-rc.2
+  -- npx -y codex-reasonix-mcp@0.1.0-rc.3
 ```
 
 The scanner receives the changed file list appended to its configured argv and

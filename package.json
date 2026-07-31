@@ -1,6 +1,6 @@
 {
   "name": "codex-reasonix-mcp",
-  "version": "0.1.0-rc.2",
+  "version": "0.1.0-rc.3",
   "description": "A security-first MCP bridge that lets Codex supervise Reasonix ACP workers.",
   "type": "module",
   "license": "MIT",

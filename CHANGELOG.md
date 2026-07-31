@@ -2,6 +2,15 @@
 
 All notable changes are documented here. Versions follow Semantic Versioning.
 
+## [0.1.0-rc.3] - 2026-08-01
+
+### Fixed
+
+- Accept the single-dash option spelling emitted by Go's standard flag help
+  while retaining support for conventional double-dash help output.
+- Align the strict Reasonix ACP status schema with the upstream sandbox
+  `available` field and fail closed when the effective sandbox is unavailable.
+
 ## [0.1.0-rc.2] - 2026-07-31
 
 ### Fixed

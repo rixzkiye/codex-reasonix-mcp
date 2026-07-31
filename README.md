@@ -14,7 +14,7 @@ configuration, LLM router, or Codex source modification.
 
 ## Release status
 
-The current package version is `0.1.0-rc.2`. It requires the Reasonix ACP v1
+The current package version is `0.1.0-rc.3`. It requires the Reasonix ACP v1
 status extension described in [the upstream patch](docs/reasonix-patch.md).
 Until that patch ships in an official Reasonix binary, use a locally built
 patched binary and the npm prerelease. Stable `v1` will fail closed unless the
@@ -38,7 +38,7 @@ package neither downloads nor bundles Reasonix.
 Pin the exact bridge version when registering the MCP server:
 
 ```sh
-codex mcp add reasonix-worker -- npx -y codex-reasonix-mcp@0.1.0-rc.2
+codex mcp add reasonix-worker -- npx -y codex-reasonix-mcp@0.1.0-rc.3
 ```
 
 For development against a locally built Reasonix checkout:
@@ -46,13 +46,13 @@ For development against a locally built Reasonix checkout:
 ```sh
 codex mcp add reasonix-worker \
   --env REASONIX_BIN=/absolute/path/to/reasonix \
-  -- npx -y codex-reasonix-mcp@0.1.0-rc.2
+  -- npx -y codex-reasonix-mcp@0.1.0-rc.3
 ```
 
 Run the non-model diagnostic before delegating work:
 
 ```sh
-npx -y codex-reasonix-mcp@0.1.0-rc.2 doctor
+npx -y codex-reasonix-mcp@0.1.0-rc.3 doctor
 ```
 
 `doctor` checks Node, Git, platform/WSL, the Reasonix binary and supervisor
