@@ -1,0 +1,64 @@
+name: Bug report
+description: Report a reproducible bridge, protocol, lifecycle, or packaging defect.
+title: '[Bug]: '
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for helping improve codex-reasonix-mcp. Remove credentials, absolute private paths, and raw reasoning or terminal transcripts before submitting.
+  - type: input
+    id: bridge-version
+    attributes:
+      label: Bridge version
+      placeholder: 0.1.0-rc.1
+    validations:
+      required: true
+  - type: input
+    id: reasonix-version
+    attributes:
+      label: Reasonix version or commit
+      description: Include whether the required schemaVersion 1 supervisor extension is present.
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Linux
+        - macOS
+        - Windows through WSL
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the observed and expected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Prefer an offline reproduction with a temporary Git repository or fake ACP agent.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Redacted diagnostics
+      description: Include relevant doctor output or bounded events. Never include tokens, credentials, or raw reasoning.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Safety checks
+      options:
+        - label: I removed secrets, credentials, private paths, and raw reasoning from this report.
+          required: true
+        - label: I searched existing issues for this problem.
+          required: true

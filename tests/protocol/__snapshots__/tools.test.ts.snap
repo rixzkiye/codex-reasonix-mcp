@@ -1,0 +1,285 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`stable MCP surface > advertises codex sandbox metadata and exactly three snapshotted tools 1`] = `
+[
+  {
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "base_ref": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "type": "string",
+        },
+        "contract": {
+          "additionalProperties": false,
+          "properties": {
+            "acceptance_criteria": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "evidence": {
+                    "enum": [
+                      "automated",
+                      "review",
+                    ],
+                    "type": "string",
+                  },
+                  "id": {
+                    "pattern": "^[A-Za-z][A-Za-z0-9._-]{0,63}$",
+                    "type": "string",
+                  },
+                  "requirement": {
+                    "$ref": "#/properties/contract/properties/objective",
+                  },
+                },
+                "required": [
+                  "id",
+                  "requirement",
+                  "evidence",
+                ],
+                "type": "object",
+              },
+              "maxItems": 1000,
+              "minItems": 1,
+              "type": "array",
+            },
+            "forbidden_scope": {
+              "items": {
+                "maxLength": 1024,
+                "minLength": 1,
+                "type": "string",
+              },
+              "maxItems": 1000,
+              "type": "array",
+            },
+            "invariants": {
+              "items": {
+                "$ref": "#/properties/contract/properties/objective",
+              },
+              "maxItems": 1000,
+              "type": "array",
+            },
+            "non_goals": {
+              "items": {
+                "$ref": "#/properties/contract/properties/objective",
+              },
+              "maxItems": 1000,
+              "type": "array",
+            },
+            "objective": {
+              "maxLength": 20000,
+              "minLength": 1,
+              "type": "string",
+            },
+            "pause_conditions": {
+              "items": {
+                "$ref": "#/properties/contract/properties/objective",
+              },
+              "maxItems": 1000,
+              "type": "array",
+            },
+            "schema_version": {
+              "const": 1,
+              "type": "number",
+            },
+            "user_outcome": {
+              "$ref": "#/properties/contract/properties/objective",
+            },
+            "verification": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "argv": {
+                    "additionalItems": {
+                      "maxLength": 4096,
+                      "type": "string",
+                    },
+                    "items": [
+                      {
+                        "maxLength": 4096,
+                        "minLength": 1,
+                        "type": "string",
+                      },
+                    ],
+                    "minItems": 1,
+                    "type": "array",
+                  },
+                  "cwd": {
+                    "maxLength": 1024,
+                    "type": "string",
+                  },
+                  "id": {
+                    "$ref": "#/properties/contract/properties/acceptance_criteria/items/properties/id",
+                  },
+                  "proves": {
+                    "items": {
+                      "$ref": "#/properties/contract/properties/acceptance_criteria/items/properties/id",
+                    },
+                    "maxItems": 256,
+                    "minItems": 1,
+                    "type": "array",
+                  },
+                  "timeout_seconds": {
+                    "maximum": 1800,
+                    "minimum": 1,
+                    "type": "integer",
+                  },
+                },
+                "required": [
+                  "id",
+                  "argv",
+                  "proves",
+                ],
+                "type": "object",
+              },
+              "maxItems": 256,
+              "type": "array",
+            },
+            "verified_context": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "path": {
+                    "maxLength": 1024,
+                    "minLength": 1,
+                    "type": "string",
+                  },
+                  "reason": {
+                    "$ref": "#/properties/contract/properties/objective",
+                  },
+                },
+                "required": [
+                  "path",
+                  "reason",
+                ],
+                "type": "object",
+              },
+              "maxItems": 1000,
+              "type": "array",
+            },
+            "write_scope": {
+              "items": {
+                "maxLength": 1024,
+                "minLength": 1,
+                "type": "string",
+              },
+              "maxItems": 1000,
+              "minItems": 1,
+              "type": "array",
+            },
+          },
+          "required": [
+            "schema_version",
+            "objective",
+            "user_outcome",
+            "verified_context",
+            "write_scope",
+            "forbidden_scope",
+            "invariants",
+            "non_goals",
+            "acceptance_criteria",
+            "verification",
+            "pause_conditions",
+          ],
+          "type": "object",
+        },
+        "resume": {
+          "default": true,
+          "type": "boolean",
+        },
+        "task_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "task_id",
+        "contract",
+      ],
+      "type": "object",
+    },
+    "name": "reasonix_delegate",
+    "outputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": true,
+      "properties": {},
+      "type": "object",
+    },
+  },
+  {
+    "inputSchema": {
+      "properties": {},
+      "type": "object",
+    },
+    "name": "reasonix_control",
+    "outputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": true,
+      "properties": {},
+      "type": "object",
+    },
+  },
+  {
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "maxLength": 8192,
+          "minLength": 1,
+          "type": "string",
+        },
+        "include": {
+          "items": {
+            "enum": [
+              "status",
+              "summary",
+              "changed_files",
+              "diff_stat",
+              "diff",
+              "verification",
+              "acceptance_evidence",
+              "risks",
+              "usage",
+              "interactions",
+              "events",
+            ],
+            "type": "string",
+          },
+          "maxItems": 11,
+          "type": "array",
+        },
+        "max_bytes": {
+          "maximum": 65536,
+          "minimum": 1024,
+          "type": "integer",
+        },
+        "task_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string",
+        },
+        "wait_ms": {
+          "maximum": 30000,
+          "minimum": 0,
+          "type": "integer",
+        },
+      },
+      "required": [
+        "task_id",
+      ],
+      "type": "object",
+    },
+    "name": "reasonix_inspect",
+    "outputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": true,
+      "properties": {},
+      "type": "object",
+    },
+  },
+]
+`;

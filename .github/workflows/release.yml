@@ -1,0 +1,48 @@
+name: Release npm package
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Trusted publish
+    runs-on: ubuntu-24.04
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.release.tag_name }}
+      - name: Install pnpm
+        uses: pnpm/action-setup@8912a9102ac27614460f54aedde9e1e7f9aec20d # v6.0.5
+        with:
+          version: 10.33.2
+          run_install: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - run: pnpm install --frozen-lockfile
+      - id: release
+        name: Validate release tag and select npm dist-tag
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: node scripts/release-metadata.mjs --github-output
+      - run: pnpm check
+      - run: pnpm audit --audit-level high
+      - run: mkdir -p release-artifacts
+      - run: pnpm pack --pack-destination release-artifacts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codex-reasonix-mcp-${{ steps.release.outputs.version }}
+          path: release-artifacts/*.tgz
+          if-no-files-found: error
+      - name: Publish with npm trusted publishing and provenance
+        run: npm publish --provenance --access public --tag ${{ steps.release.outputs.dist_tag }}

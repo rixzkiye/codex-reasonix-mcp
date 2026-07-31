@@ -1,0 +1,83 @@
+{
+  "name": "codex-reasonix-mcp",
+  "version": "0.1.0-rc.1",
+  "description": "A security-first MCP bridge that lets Codex supervise Reasonix ACP workers.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Codex Reasonix MCP contributors",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rixzkiye/codex-reasonix-mcp.git"
+  },
+  "homepage": "https://github.com/rixzkiye/codex-reasonix-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/rixzkiye/codex-reasonix-mcp/issues"
+  },
+  "keywords": [
+    "codex",
+    "reasonix",
+    "mcp",
+    "acp",
+    "model-context-protocol"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.33.2",
+  "bin": {
+    "codex-reasonix-mcp": "dist/index.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "docs",
+    "examples",
+    "patches",
+    "README.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:unit": "vitest run tests/unit",
+    "test:integration": "vitest run tests/integration tests/protocol",
+    "test:e2e": "vitest run tests/e2e",
+    "pack:check": "pnpm pack --dry-run",
+    "package:check": "node scripts/check-package-content.mjs",
+    "audit": "pnpm audit --audit-level high",
+    "check": "pnpm lint && pnpm format:check && pnpm typecheck && pnpm test && pnpm build && pnpm package:check && pnpm pack:check",
+    "prepack": "pnpm build"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "1.3.0",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "picomatch": "4.0.5",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "24.1.0",
+    "@types/picomatch": "4.0.3",
+    "eslint": "10.8.0",
+    "prettier": "3.6.2",
+    "tsx": "4.20.3",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.65.0",
+    "vitest": "4.1.10"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

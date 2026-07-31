@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+*.tgz
+.DS_Store
+.tmp/
+.env
+.env.*
+!.env.example
+.pnpm-store/

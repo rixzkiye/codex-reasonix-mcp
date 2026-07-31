@@ -1,0 +1,42 @@
+name: Feature request
+description: Propose a scoped bridge, protocol, security, or developer-experience improvement.
+title: '[Feature]: '
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user or supervisor problem should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the public contract, lifecycle, or workflow change.
+    validations:
+      required: true
+  - type: textarea
+    id: security
+    attributes:
+      label: Security and compatibility impact
+      description: Explain effects on scope, permissions, credentials, network, Git ownership, MCP schemas, or Reasonix compatibility.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Project constraints
+      options:
+        - label: This proposal preserves Codex as supervisor and does not add a model/router to the bridge.
+          required: true
+        - label: This proposal does not require automatic push, merge, or destructive cleanup.
+          required: true
+        - label: I searched existing issues and pull requests.
+          required: true
