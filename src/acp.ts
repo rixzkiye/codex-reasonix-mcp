@@ -29,6 +29,7 @@ import {
   type ReasonixStatusUpdate,
 } from './reasonix-status.js';
 import type { RepositoryIdentity } from './types.js';
+import { VERSION } from './version.js';
 
 export interface ReasonixCallbacks {
   onPermission(params: RequestPermissionRequest): Promise<RequestPermissionResponse>;
@@ -196,7 +197,7 @@ export class ReasonixProcess {
     try {
       initialized = await connection.agent.request(acp.methods.agent.initialize, {
         protocolVersion: acp.PROTOCOL_VERSION,
-        clientInfo: { name: 'codex-reasonix-mcp', version: '0.1.0-rc.1' },
+        clientInfo: { name: 'codex-reasonix-mcp', version: VERSION },
         clientCapabilities: {},
       });
     } catch (error) {
@@ -320,6 +321,7 @@ export class ReasonixProcess {
       roots[0] !== canonicalWorktree ||
       status.sandbox.mode !== 'enforce' ||
       status.sandbox.engine !== expectedEngine ||
+      !status.sandbox.available ||
       status.sandbox.networkEnabled !== networkEnabled
     ) {
       throw new BridgeError(
@@ -333,6 +335,7 @@ export class ReasonixProcess {
           workspaceRoot: status.sandbox.workspaceRoot,
           writeRoots: status.sandbox.writeRoots,
           sandboxEngine: status.sandbox.engine,
+          sandboxAvailable: status.sandbox.available,
           networkEnabled: status.sandbox.networkEnabled,
         },
       );
