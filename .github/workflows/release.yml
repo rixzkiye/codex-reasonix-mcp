@@ -45,6 +45,4 @@ jobs:
           path: release-artifacts/*.tgz
           if-no-files-found: error
       - name: Publish with npm trusted publishing and provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --provenance --access public --tag ${{ steps.release.outputs.dist_tag }}
