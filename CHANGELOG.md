@@ -2,6 +2,16 @@
 
 All notable changes are documented here. Versions follow Semantic Versioning.
 
+## [0.1.0-rc.4] - 2026-08-02
+
+### Fixed
+
+- Advertise homogeneous verification argv arrays so Codex 0.146.0 can parse and
+  expose `reasonix_delegate` without relaxing `TaskContractV1` validation.
+- Publish `reasonix_control` as a flat object schema and revalidate its
+  action-specific fields through the strict domain discriminated union.
+- Name and explain all three MCP tools at the start of the server instructions.
+
 ## [0.1.0-rc.3] - 2026-08-01
 
 ### Fixed

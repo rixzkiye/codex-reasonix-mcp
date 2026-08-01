@@ -44,6 +44,20 @@ describe('TaskContractV1', () => {
     );
   });
 
+  it.each([
+    ['an empty first argument', ['', '--version']],
+    ['more than 128 arguments', Array.from({ length: 129 }, () => 'arg')],
+    ['an argument over 4,096 characters', ['command', 'x'.repeat(4_097)]],
+  ])('rejects verification argv with %s', (_reason, argv) => {
+    const fixture = contractFixture();
+    expect(() =>
+      parseTaskContract({
+        ...fixture,
+        verification: [{ ...fixture.verification[0], argv }],
+      }),
+    ).toThrow(BridgeError);
+  });
+
   it('makes forbidden_scope win over write_scope', () => {
     const contract = parseTaskContract({
       ...contractFixture(),

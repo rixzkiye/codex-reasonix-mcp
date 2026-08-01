@@ -92,17 +92,11 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
                 "additionalProperties": false,
                 "properties": {
                   "argv": {
-                    "additionalItems": {
+                    "items": {
                       "maxLength": 4096,
                       "type": "string",
                     },
-                    "items": [
-                      {
-                        "maxLength": 4096,
-                        "minLength": 1,
-                        "type": "string",
-                      },
-                    ],
+                    "maxItems": 128,
                     "minItems": 1,
                     "type": "array",
                   },
@@ -211,7 +205,83 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
   },
   {
     "inputSchema": {
-      "properties": {},
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "steer",
+            "respond",
+            "cancel",
+            "finalize",
+            "close",
+          ],
+          "type": "string",
+        },
+        "answer": {
+          "description": "Optional free-form answer for action respond; omit for other actions.",
+          "maxLength": 10000,
+          "minLength": 1,
+          "type": "string",
+        },
+        "approved_review_criteria": {
+          "description": "Required when action is finalize; omit for other actions.",
+          "items": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string",
+          },
+          "maxItems": 1000,
+          "type": "array",
+        },
+        "commit_message": {
+          "description": "Optional commit message for action finalize; omit for other actions.",
+          "maxLength": 5000,
+          "minLength": 1,
+          "type": "string",
+        },
+        "decision": {
+          "description": "Required when action is respond; omit for other actions.",
+          "enum": [
+            "allow",
+            "deny",
+          ],
+          "type": "string",
+        },
+        "interaction_id": {
+          "description": "Required when action is respond; omit for other actions.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+        "message": {
+          "description": "Required when action is steer; omit for other actions.",
+          "maxLength": 20000,
+          "minLength": 1,
+          "type": "string",
+        },
+        "option_id": {
+          "description": "Optional offered option for action respond; omit for other actions.",
+          "maxLength": 1024,
+          "minLength": 1,
+          "type": "string",
+        },
+        "review_summary": {
+          "description": "Required when action is finalize; omit for other actions.",
+          "maxLength": 20000,
+          "minLength": 1,
+          "type": "string",
+        },
+        "task_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "task_id",
+        "action",
+      ],
       "type": "object",
     },
     "name": "reasonix_control",
