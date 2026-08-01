@@ -10,6 +10,7 @@ import {
   controlInputSchema,
   delegateInputSchema,
   inspectInputSchema,
+  parseControlInput,
   toolOutputSchema,
 } from './tool-schemas.js';
 import { VERSION } from './version.js';
@@ -46,7 +47,7 @@ export function createMcpServer(runtime: BridgeRuntime): McpServer {
         experimental: { [SANDBOX_META_KEY]: {} },
       },
       instructions:
-        'Codex supervises Reasonix through exactly three tools. Delegate and finalize require codex/sandbox-state-meta. The bridge never pushes or merges.',
+        'reasonix_delegate validates a TaskContractV1 and starts isolated Reasonix work. reasonix_control steers, responds, cancels, finalizes, or closes that work. reasonix_inspect reads bounded task status and evidence. Delegate and finalize require codex/sandbox-state-meta. The bridge never pushes or merges.',
     },
   );
 
@@ -81,7 +82,7 @@ export function createMcpServer(runtime: BridgeRuntime): McpServer {
     },
     async (args, extra: Extra) => {
       try {
-        return success(await runtime.control(args, extra._meta));
+        return success(await runtime.control(parseControlInput(args), extra._meta));
       } catch (error) {
         return failure(error);
       }
