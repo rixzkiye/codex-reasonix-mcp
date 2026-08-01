@@ -39,7 +39,7 @@ jobs:
       - run: pnpm audit --audit-level high
       - run: mkdir -p release-artifacts
       - run: pnpm pack --pack-destination release-artifacts
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: codex-reasonix-mcp-${{ steps.release.outputs.version }}
           path: release-artifacts/*.tgz
