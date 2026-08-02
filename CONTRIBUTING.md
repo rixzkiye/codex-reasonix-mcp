@@ -31,15 +31,17 @@ repositories and the fake ACP agent.
 ## Pull requests
 
 Explain the threat boundary affected, tests run, and any Reasonix compatibility
-requirement. Keep the bridge and upstream patch changes separately reviewable.
-Do not include generated credentials, local state, `.tmp` checkouts, worktrees,
-or package tarballs.
+requirement. Do not include generated credentials, local state, `.tmp`
+checkouts, worktrees, or package tarballs.
 
 ## Releases
 
 Update `CHANGELOG.md` and `package.json` together, then create a GitHub release
 whose tag exactly matches `v<version>`. The `npm` environment and npm trusted
 publisher must both authorize `.github/workflows/release.yml`. Never add an npm
-automation token: the workflow uses short-lived OIDC and provenance. Release
-prereleases while the Reasonix compatibility patch is not yet available in an
-official binary; stable v1 remains blocked until it is.
+automation token: the workflow uses short-lived OIDC and provenance.
+
+Prereleases publish under `next`; stable versions publish under `latest`. A
+stable release also requires a clean-install verification, registry signatures
+and provenance, `doctor` against a supported official Reasonix binary, and a
+fresh Codex catalog smoke that does not invoke Reasonix work.

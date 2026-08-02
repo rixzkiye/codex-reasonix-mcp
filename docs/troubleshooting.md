@@ -19,9 +19,10 @@ _reasonix.io/session/status_update
 schemaVersion: 1
 ```
 
-Build Reasonix from the patched checkout described in
-[reasonix-patch.md](reasonix-patch.md), set `REASONIX_BIN` to that executable,
-restart Codex, and rerun `doctor`. Stable v1 intentionally has no degraded mode.
+Install official Reasonix v1.19.0 or a compatible newer release. If the binary
+is not on `PATH`, set `REASONIX_BIN` to its absolute path, restart Codex, and
+rerun `doctor`. The bridge intentionally has no degraded mode for missing
+capabilities.
 
 ## Sandbox mismatch
 

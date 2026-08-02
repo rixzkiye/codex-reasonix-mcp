@@ -25,7 +25,7 @@ if (!Array.isArray(report) || report.length !== 1 || !Array.isArray(report[0]?.f
 
 const entries = report[0].files;
 const paths = entries.map((entry) => String(entry.path).replaceAll('\\', '/'));
-const allowedRoots = ['dist/', 'docs/', 'examples/', 'patches/'];
+const allowedRoots = ['dist/', 'docs/', 'examples/'];
 const allowedFiles = new Set([
   'package.json',
   'README.md',
@@ -45,13 +45,7 @@ if (unexpected.length > 0) {
   throw new Error(`Unexpected npm package content: ${unexpected.join(', ')}`);
 }
 
-for (const required of [
-  'dist/index.js',
-  'dist/index.d.ts',
-  'README.md',
-  'LICENSE',
-  'patches/reasonix/main-v2-acp-supervisor.patch',
-]) {
+for (const required of ['dist/index.js', 'dist/index.d.ts', 'README.md', 'LICENSE']) {
   if (!paths.includes(required)) throw new Error(`Required package file is missing: ${required}`);
 }
 

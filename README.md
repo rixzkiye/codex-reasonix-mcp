@@ -14,11 +14,10 @@ configuration, LLM router, or Codex source modification.
 
 ## Release status
 
-The current package version is `0.1.0-rc.4`. It requires the Reasonix ACP v1
-status extension described in [the upstream patch](docs/reasonix-patch.md).
-Until that patch ships in an official Reasonix binary, use a locally built
-patched binary and the npm prerelease. Stable `v1` will fail closed unless the
-binary advertises both required `schemaVersion: 1` capabilities.
+The current package version is the stable `0.1.0` release. Official Reasonix
+`v1.19.0` includes the ACP v1 supervisor and status capabilities required by
+the bridge. Runtime capability checks remain authoritative, and incompatible
+binaries fail closed before any model prompt is sent.
 
 ## Requirements
 
@@ -26,7 +25,8 @@ binary advertises both required `schemaVersion: 1` capabilities.
 - pnpm 10 for source development
 - Git 2.36 or newer (worktrees plus `git hook run`)
 - Linux, macOS, or Windows through WSL; native Windows is rejected
-- Reasonix with ACP v1 plus the required status extension
+- Reasonix v1.19.0 or a compatible newer build with the required ACP v1
+  supervisor and status capabilities
 - Bubblewrap on Linux/WSL or Seatbelt on macOS
 - A configured Reasonix provider exposing `deepseek-v4-flash`
 
@@ -38,7 +38,7 @@ package neither downloads nor bundles Reasonix.
 Pin the exact bridge version when registering the MCP server:
 
 ```sh
-codex mcp add reasonix-worker -- npx -y codex-reasonix-mcp@0.1.0-rc.4
+codex mcp add reasonix-worker -- npx -y codex-reasonix-mcp@0.1.0
 ```
 
 For development against a locally built Reasonix checkout:
@@ -46,13 +46,13 @@ For development against a locally built Reasonix checkout:
 ```sh
 codex mcp add reasonix-worker \
   --env REASONIX_BIN=/absolute/path/to/reasonix \
-  -- npx -y codex-reasonix-mcp@0.1.0-rc.4
+  -- npx -y codex-reasonix-mcp@0.1.0
 ```
 
 Run the non-model diagnostic before delegating work:
 
 ```sh
-npx -y codex-reasonix-mcp@0.1.0-rc.4 doctor
+npx -y codex-reasonix-mcp@0.1.0 doctor
 ```
 
 `doctor` checks Node, Git, platform/WSL, the Reasonix binary and supervisor

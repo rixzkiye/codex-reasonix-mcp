@@ -2,6 +2,20 @@
 
 All notable changes are documented here. Versions follow Semantic Versioning.
 
+## [0.1.0] - 2026-08-02
+
+### Added
+
+- Publish the first stable bridge release after all release-candidate protocol,
+  lifecycle, sandbox, packaging, and Codex visibility gates passed.
+
+### Changed
+
+- Set official Reasonix v1.19.0 as the supported compatibility baseline now
+  that it ships the required ACP v1 supervisor and status capabilities.
+- Remove the obsolete bundled Reasonix source patch while retaining strict,
+  capability-based fail-closed validation.
+
 ## [0.1.0-rc.4] - 2026-08-02
 
 ### Fixed
