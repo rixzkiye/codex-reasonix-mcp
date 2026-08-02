@@ -14,7 +14,7 @@ configuration, LLM router, or Codex source modification.
 
 ## Release status
 
-The current package version is the stable `0.1.0` release. Official Reasonix
+The current package version is the stable `0.1.1` release. Official Reasonix
 `v1.19.0` includes the ACP v1 supervisor and status capabilities required by
 the bridge. Runtime capability checks remain authoritative, and incompatible
 binaries fail closed before any model prompt is sent.
@@ -38,7 +38,7 @@ package neither downloads nor bundles Reasonix.
 Pin the exact bridge version when registering the MCP server:
 
 ```sh
-codex mcp add reasonix-worker -- npx -y codex-reasonix-mcp@0.1.0
+codex mcp add reasonix-worker -- npx -y codex-reasonix-mcp@0.1.1
 ```
 
 For development against a locally built Reasonix checkout:
@@ -46,13 +46,13 @@ For development against a locally built Reasonix checkout:
 ```sh
 codex mcp add reasonix-worker \
   --env REASONIX_BIN=/absolute/path/to/reasonix \
-  -- npx -y codex-reasonix-mcp@0.1.0
+  -- npx -y codex-reasonix-mcp@0.1.1
 ```
 
 Run the non-model diagnostic before delegating work:
 
 ```sh
-npx -y codex-reasonix-mcp@0.1.0 doctor
+npx -y codex-reasonix-mcp@0.1.1 doctor
 ```
 
 `doctor` checks Node, Git, platform/WSL, the Reasonix binary and supervisor
@@ -71,6 +71,12 @@ The server is named `reasonix_worker` and exposes exactly three tools:
   closes a task. At most two post-review repair rounds are accepted.
 - `reasonix_inspect` returns bounded status, evidence, interactions, events,
   and optional paginated diffs.
+
+Codex calls `reasonix_delegate` only after the user explicitly requests or
+approves Reasonix implementation. Once approved, Codex does not substitute
+native subagents for that contracted work. Native Codex subagents remain the
+right fit for bounded parallel exploration, tests, triage, or summaries that
+do not require the Reasonix task lifecycle.
 
 `reasonix_delegate` and finalization require Codex's
 `codex/sandbox-state-meta`. A writable repository path is derived only from that

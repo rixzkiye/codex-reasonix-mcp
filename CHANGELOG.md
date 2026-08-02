@@ -2,6 +2,17 @@
 
 All notable changes are documented here. Versions follow Semantic Versioning.
 
+## [0.1.1] - 2026-08-02
+
+### Changed
+
+- Route explicitly approved Reasonix implementation through `reasonix_delegate`
+  instead of substituting native Codex subagents, while retaining native
+  subagents for bounded parallel exploration, tests, triage, and summaries.
+- Publish the complete routing boundary, all three tool names, sandbox metadata
+  requirement, and no-push/no-merge constraint within the first 512 server
+  instruction characters.
+
 ## [0.1.0] - 2026-08-02
 
 ### Added
