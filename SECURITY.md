@@ -2,8 +2,8 @@
 
 ## Supported versions
 
-Security fixes are provided for the latest published prerelease during the
-release-candidate period and the latest stable major after v1 ships.
+Security fixes are provided for the latest stable release and, when one is
+available, the latest published prerelease.
 
 ## Reporting a vulnerability
 

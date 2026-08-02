@@ -12,14 +12,14 @@ body:
     id: bridge-version
     attributes:
       label: Bridge version
-      placeholder: 0.1.0-rc.1
+      placeholder: 0.1.0
     validations:
       required: true
   - type: input
     id: reasonix-version
     attributes:
       label: Reasonix version or commit
-      description: Include whether the required schemaVersion 1 supervisor extension is present.
+      description: Include whether the required schemaVersion 1 supervisor extension is present; official v1.19.0 is the stable baseline.
     validations:
       required: true
   - type: dropdown

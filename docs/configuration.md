@@ -22,7 +22,7 @@ Example registration with an external scanner:
 codex mcp add reasonix-worker \
   --env REASONIX_BIN=/opt/reasonix/bin/reasonix \
   --env CODEX_REASONIX_SECRET_SCANNER_ARGV='["secret-scanner","scan"]' \
-  -- npx -y codex-reasonix-mcp@0.1.0-rc.4
+  -- npx -y codex-reasonix-mcp@0.1.0
 ```
 
 The scanner receives the changed file list appended to its configured argv and
@@ -57,5 +57,6 @@ uploads the tarball as a release artifact, and publishes with OIDC provenance.
 It intentionally does not read `NPM_TOKEN`.
 
 SemVer prereleases publish under `next`; stable versions publish under `latest`.
-Do not create a stable v1 release until an official Reasonix binary advertises
-both required schema-version-1 status capabilities.
+Every stable release must pass `doctor` against a supported official Reasonix
+binary. Capability checks remain fail closed even when the binary version is
+newer than the documented v1.19.0 baseline.

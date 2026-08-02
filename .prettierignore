@@ -2,4 +2,3 @@ dist/
 coverage/
 .tmp/
 pnpm-lock.yaml
-patches/**/*.patch
