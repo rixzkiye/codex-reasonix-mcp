@@ -4,6 +4,8 @@
 [![CodeQL](https://github.com/rixzkiye/codex-reasonix-mcp/actions/workflows/codeql.yml/badge.svg)](https://github.com/rixzkiye/codex-reasonix-mcp/actions/workflows/codeql.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+![Codex supervising a Reasonix worker through the security-first MCP bridge](docs/assets/codex-reasonix-bridge.svg)
+
 `codex-reasonix-mcp` is a security-first MCP bridge that lets Codex supervise
 Reasonix as an implementation worker. Codex owns the contract, review, and final
 commit decision. Reasonix works in an isolated Git worktree through ACP Goal
