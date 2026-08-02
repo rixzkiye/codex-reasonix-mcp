@@ -11,6 +11,9 @@ import { createMcpServer } from '../../src/server.js';
 const CODEX_0146_JSON_SCHEMA_SOURCE =
   'https://github.com/openai/codex/blob/e363b08c9175ac1cbe5893615dd2cb9ddf95043b/codex-rs/tools/src/json_schema.rs';
 
+const EXPECTED_SERVER_INSTRUCTIONS =
+  'Use reasonix_delegate only after explicit user request or approval for Reasonix implementation. It creates an immutable TaskContractV1, isolated worktree/session, async execution, and supervised finalization; never substitute native Codex subagents for that work. Use native subagents for bounded parallel exploration, tests, triage, or summaries. reasonix_control manages a Reasonix task; reasonix_inspect reads bounded status/evidence. Delegate/finalize require codex/sandbox-state-meta. Never push or merge.';
+
 const CODEX_0146_PRIMITIVE_TYPES = new Set([
   'string',
   'number',
@@ -96,10 +99,17 @@ describe('stable MCP surface', () => {
     try {
       const capabilities = client.getServerCapabilities();
       expect(capabilities?.experimental).toHaveProperty('codex/sandbox-state-meta');
-      const instructionPrefix = client.getInstructions()?.slice(0, 512);
-      expect(instructionPrefix).toContain('reasonix_delegate');
-      expect(instructionPrefix).toContain('reasonix_control');
-      expect(instructionPrefix).toContain('reasonix_inspect');
+      const instructions = client.getInstructions();
+      expect(instructions).toBe(EXPECTED_SERVER_INSTRUCTIONS);
+      expect(instructions).toHaveLength(510);
+      expect(instructions?.slice(0, 512)).toContain('reasonix_delegate');
+      expect(instructions?.slice(0, 512)).toContain('reasonix_control');
+      expect(instructions?.slice(0, 512)).toContain('reasonix_inspect');
+      expect(instructions).toContain('explicit user request or approval');
+      expect(instructions).toContain('never substitute native Codex subagents');
+      expect(instructions).toContain('Use native subagents for bounded parallel');
+      expect(instructions).toContain('codex/sandbox-state-meta');
+      expect(instructions).toContain('Never push or merge');
       const result = await client.listTools();
       expect(result.tools.map((tool) => tool.name)).toEqual([
         'reasonix_delegate',
@@ -113,6 +123,11 @@ describe('stable MCP surface', () => {
       }
 
       const delegate = result.tools.find((tool) => tool.name === 'reasonix_delegate');
+      expect(delegate?.description).toContain('explicit user request or approval');
+      expect(delegate?.description).toContain(
+        'Never substitute native Codex subagents for approved Reasonix work',
+      );
+      expect(delegate?.description).toContain('bounded parallel exploration');
       const delegateProperties = schemaObject(delegate?.inputSchema.properties, 'delegate');
       const contract = schemaObject(delegateProperties.contract, 'delegate.contract');
       const contractProperties = schemaObject(contract.properties, 'delegate.contract.properties');
@@ -138,6 +153,7 @@ describe('stable MCP surface', () => {
       expect(Array.isArray(argv.items)).toBe(false);
 
       const control = result.tools.find((tool) => tool.name === 'reasonix_control');
+      expect(control?.description).toContain('created by reasonix_delegate');
       const controlProperties = schemaObject(control?.inputSchema.properties, 'control');
       expect(Object.keys(controlProperties).sort()).toEqual(
         [
@@ -161,6 +177,9 @@ describe('stable MCP surface', () => {
         'finalize',
         'close',
       ]);
+      const inspect = result.tools.find((tool) => tool.name === 'reasonix_inspect');
+      expect(inspect?.description).toContain('Use for a Reasonix task');
+      expect(inspect?.description).toContain('bounded status, evidence');
       expect(
         result.tools.map((tool) => ({
           name: tool.name,

@@ -47,7 +47,7 @@ export function createMcpServer(runtime: BridgeRuntime): McpServer {
         experimental: { [SANDBOX_META_KEY]: {} },
       },
       instructions:
-        'reasonix_delegate validates a TaskContractV1 and starts isolated Reasonix work. reasonix_control steers, responds, cancels, finalizes, or closes that work. reasonix_inspect reads bounded task status and evidence. Delegate and finalize require codex/sandbox-state-meta. The bridge never pushes or merges.',
+        'Use reasonix_delegate only after explicit user request or approval for Reasonix implementation. It creates an immutable TaskContractV1, isolated worktree/session, async execution, and supervised finalization; never substitute native Codex subagents for that work. Use native subagents for bounded parallel exploration, tests, triage, or summaries. reasonix_control manages a Reasonix task; reasonix_inspect reads bounded status/evidence. Delegate/finalize require codex/sandbox-state-meta. Never push or merge.',
     },
   );
 
@@ -56,7 +56,7 @@ export function createMcpServer(runtime: BridgeRuntime): McpServer {
     {
       title: 'Delegate a contract to Reasonix',
       description:
-        'Validate an immutable TaskContractV1, create an isolated worktree/session, and start Goal work asynchronously.',
+        'Use only after explicit user request or approval for Reasonix implementation requiring an immutable TaskContractV1, isolated worktree/session, asynchronous execution, and supervised finalization. Never substitute native Codex subagents for approved Reasonix work; use native subagents for bounded parallel exploration, tests, triage, or summaries.',
       inputSchema: delegateInputSchema,
       outputSchema: toolOutputSchema,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
@@ -75,7 +75,7 @@ export function createMcpServer(runtime: BridgeRuntime): McpServer {
     {
       title: 'Control a Reasonix task',
       description:
-        'Steer, resolve an interaction, cancel, asynchronously finalize, or close one delegated task.',
+        'Use only for a Reasonix task created by reasonix_delegate: steer, resolve an interaction, cancel, asynchronously finalize, or close it.',
       inputSchema: controlInputSchema,
       outputSchema: toolOutputSchema,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
@@ -94,7 +94,7 @@ export function createMcpServer(runtime: BridgeRuntime): McpServer {
     {
       title: 'Inspect a Reasonix task',
       description:
-        'Read bounded status, evidence, interactions, events, and optionally paginated diff output.',
+        'Use for a Reasonix task to read bounded status, evidence, interactions, events, and optionally paginated diff output.',
       inputSchema: inspectInputSchema,
       outputSchema: toolOutputSchema,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
