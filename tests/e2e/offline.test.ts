@@ -32,6 +32,21 @@ async function runtimeFixture(overrides: Partial<BridgeConfig> = {}): Promise<Br
   return runtime;
 }
 
+async function commitFixtureScript(
+  repository: string,
+  name: string,
+  content: string,
+): Promise<void> {
+  await writeFile(path.join(repository, name), content, 'utf8');
+  for (const argv of [
+    ['git', 'add', '--', name],
+    ['git', 'commit', '-m', `test: add ${name}`],
+  ] as Array<[string, ...string[]]>) {
+    const result = await runCommand({ argv, cwd: repository });
+    if (result.exitCode !== 0) throw new Error(result.stderr);
+  }
+}
+
 describe('offline Codex -> Reasonix -> Codex flow', () => {
   it('rejects a dirty source before starting Reasonix', async () => {
     const repository = await createGitRepository();
@@ -102,7 +117,7 @@ describe('offline Codex -> Reasonix -> Codex flow', () => {
       verification: [
         {
           id: 'verify_result',
-          argv: [process.execPath, '-e', 'process.exit(9)'],
+          argv: ['test', '!', '-f', 'result.txt'],
           cwd: '.',
           timeout_seconds: 30,
           proves: ['ac_result'],
@@ -270,11 +285,12 @@ describe('offline Codex -> Reasonix -> Codex flow', () => {
       `spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:'ignore'})`,
       'setInterval(() => {}, 1000)',
     ].join(';');
+    await commitFixtureScript(repository, 'slow-verification.cjs', `${slowVerification}\n`);
     const contract = contractFixture({
       verification: [
         {
           id: 'slow_verify',
-          argv: [process.execPath, '-e', slowVerification],
+          argv: [process.execPath, 'slow-verification.cjs'],
           cwd: '.',
           timeout_seconds: 30,
           proves: ['ac_result'],
@@ -321,15 +337,16 @@ describe('offline Codex -> Reasonix -> Codex flow', () => {
   it('rechecks changed-file size after verification before staging', async () => {
     const repository = await createGitRepository();
     const runtime = await runtimeFixture({ maxBinaryBytes: 64 });
+    await commitFixtureScript(
+      repository,
+      'enlarge-result.cjs',
+      "require('node:fs').writeFileSync('result.txt','x'.repeat(256))\n",
+    );
     const contract = contractFixture({
       verification: [
         {
           id: 'enlarge_result',
-          argv: [
-            process.execPath,
-            '-e',
-            "require('node:fs').writeFileSync('result.txt','x'.repeat(256))",
-          ],
+          argv: [process.execPath, 'enlarge-result.cjs'],
           cwd: '.',
           timeout_seconds: 30,
           proves: ['ac_result'],
@@ -366,11 +383,16 @@ describe('offline Codex -> Reasonix -> Codex flow', () => {
   it('waits for aborted background finalization before shutdown returns', async () => {
     const repository = await createGitRepository();
     const runtime = await runtimeFixture();
+    await commitFixtureScript(
+      repository,
+      'shutdown-verification.cjs',
+      'setInterval(() => {}, 1000)\n',
+    );
     const contract = contractFixture({
       verification: [
         {
           id: 'shutdown_verify',
-          argv: [process.execPath, '-e', 'setInterval(() => {}, 1000)'],
+          argv: [process.execPath, 'shutdown-verification.cjs'],
           cwd: '.',
           timeout_seconds: 30,
           proves: ['ac_result'],

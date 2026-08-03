@@ -21,7 +21,7 @@ import { statusToUsage } from './shared.js';
 export interface SessionSupervisionDependencies {
   config: BridgeConfig;
   store: StateStore;
-  permissions: Pick<PermissionAccess, 'onPermission'>;
+  permissions: Pick<PermissionAccess, 'onPermission' | 'onToolCallUpdate' | 'finishPrompt'>;
   collision: Pick<LeaseAccess, 'releaseLease'>;
 }
 
@@ -216,6 +216,11 @@ export class SessionSupervisor implements SessionAccess {
       return;
     }
     if (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update') {
+      await this.dependencies.permissions.onToolCallUpdate(
+        taskId,
+        update.toolCallId,
+        update.status,
+      );
       await this.dependencies.store.recordEvent(taskId, update.sessionUpdate, redact(update));
       return;
     }
@@ -256,6 +261,7 @@ export class SessionSupervisor implements SessionAccess {
   ): Promise<void> {
     const taskId = this.sessionToTask.get(sessionId);
     if (!taskId) return;
+    await this.dependencies.permissions.finishPrompt(taskId);
     if (error || !status) {
       await this.failTask(
         taskId,

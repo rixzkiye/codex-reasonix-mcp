@@ -114,6 +114,7 @@ export class ReasonixProcess {
   private readonly child: ChildProcessWithoutNullStreams;
   private readonly connection: acp.ClientConnection;
   private readonly sessions = new Map<string, SessionRuntime>();
+  private readonly promptTasks = new Set<Promise<void>>();
   private readonly initializeResponse: InitializeResponse;
   private closed = false;
   private failureReported = false;
@@ -394,12 +395,12 @@ export class ReasonixProcess {
     const runtime = this.sessions.get(sessionId);
     if (!runtime) throw new BridgeError('invalid_state', `Unknown ACP session: ${sessionId}`);
     runtime.activePrompt = true;
-    void this.connection.agent
-      .request(acp.methods.agent.session.prompt, {
-        sessionId,
-        prompt: [{ type: 'text', text: prompt }],
-      })
-      .then(async (response) => {
+    const task = (async (): Promise<void> => {
+      try {
+        const response = await this.connection.agent.request(acp.methods.agent.session.prompt, {
+          sessionId,
+          prompt: [{ type: 'text', text: prompt }],
+        });
         runtime.activePrompt = false;
         let status: ReasonixStatus | undefined;
         try {
@@ -408,11 +409,13 @@ export class ReasonixProcess {
           // Prompt completion still needs to be surfaced; malformed status fails closed upstream.
         }
         await this.callbacks.onPromptComplete(sessionId, response, status);
-      })
-      .catch(async (error: unknown) => {
+      } catch (error) {
         runtime.activePrompt = false;
         await this.callbacks.onPromptComplete(sessionId, undefined, undefined, error);
-      });
+      }
+    })().catch(() => undefined);
+    this.promptTasks.add(task);
+    void task.finally(() => this.promptTasks.delete(task));
   }
 
   prompt(sessionId: string, prompt: string): void {
@@ -459,6 +462,7 @@ export class ReasonixProcess {
       new Promise<void>((resolve) => setTimeout(resolve, 2_000)),
     ]);
     if (this.child.exitCode === null && this.child.signalCode === null) this.child.kill('SIGKILL');
+    await Promise.allSettled(this.promptTasks);
   }
 
   get agentInfo(): InitializeResponse['agentInfo'] {

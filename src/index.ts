@@ -24,7 +24,18 @@ async function main(): Promise<void> {
     return;
   }
   if (command === 'doctor') {
-    const report = await runDoctor(loadConfig());
+    const args = process.argv.slice(3);
+    const deep = args.includes('--deep');
+    const allowProviderCall = args.includes('--allow-provider-call');
+    if (
+      args.some((arg) => arg !== '--deep' && arg !== '--allow-provider-call') ||
+      (allowProviderCall && !deep)
+    ) {
+      process.stderr.write('Usage: codex-reasonix-mcp doctor [--deep --allow-provider-call]\n');
+      process.exitCode = 2;
+      return;
+    }
+    const report = await runDoctor(loadConfig(), { deep, allowProviderCall });
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
     if (!report.ok) process.exitCode = 1;
     return;
@@ -37,7 +48,9 @@ async function main(): Promise<void> {
     return;
   }
   if (command !== 'serve') {
-    process.stderr.write('Usage: codex-reasonix-mcp [serve|doctor|version|contract lint]\n');
+    process.stderr.write(
+      'Usage: codex-reasonix-mcp [serve|doctor [--deep --allow-provider-call]|version|contract lint]\n',
+    );
     process.exitCode = 2;
     return;
   }

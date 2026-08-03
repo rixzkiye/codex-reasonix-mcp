@@ -27,8 +27,14 @@ export class BridgeRuntime {
     this.collision = new CollisionController({ config, store: this.store });
 
     this.permissions = new PermissionController({
+      config,
       store: this.store,
       taskIdForSession: (sessionId) => this.sessions.taskIdForSession(sessionId),
+      cancelSession: async (task) => await this.sessions.cancelWorker(task),
+      steerRecovery: async (task, message) => {
+        const worker = this.sessions.workerForTask(task);
+        await worker.steer(task.acpSessionId!, message);
+      },
     });
     this.sessions = new SessionSupervisor({
       config,

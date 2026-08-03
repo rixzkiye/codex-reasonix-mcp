@@ -14,6 +14,7 @@ interface FakeSession {
   complete: boolean;
   sequence: number;
   cancelled: boolean;
+  failed: boolean;
   verification?: { argv: [string, ...string[]]; cwd: string };
 }
 
@@ -21,6 +22,7 @@ const sessions = new Map<string, FakeSession>();
 let nextSession = 0;
 const networkFlag = process.argv.lastIndexOf('--sandbox-network');
 const configuredNetwork = networkFlag >= 0 && process.argv[networkFlag + 1] === 'on';
+const fakeMode = process.argv.find((argument) => argument.startsWith('--fake-mode='))?.slice(12);
 
 const statusRequest = z.object({ sessionId: z.string() });
 
@@ -99,20 +101,24 @@ function status(sessionId: string) {
     goal: {
       status: session.cancelled
         ? ('cancelled' as const)
-        : session.complete
-          ? ('complete' as const)
-          : session.running
-            ? ('running' as const)
-            : ('none' as const),
+        : session.failed
+          ? ('failed' as const)
+          : session.complete
+            ? ('complete' as const)
+            : session.running
+              ? ('running' as const)
+              : ('none' as const),
       objective: 'fake offline goal',
     },
     phase: session.running ? 'implementing' : session.complete ? 'review_ready' : 'idle',
     turnOutcome: {
       kind: session.cancelled
         ? ('cancelled' as const)
-        : session.complete
-          ? ('completed' as const)
-          : ('none' as const),
+        : session.failed
+          ? ('error' as const)
+          : session.complete
+            ? ('completed' as const)
+            : ('none' as const),
     },
     finalReadiness: {
       readyForReview: session.complete,
@@ -161,6 +167,7 @@ const app = acp
       complete: false,
       sequence: 1,
       cancelled: false,
+      failed: false,
     };
     sessions.set(sessionId, session);
     return {
@@ -244,6 +251,9 @@ const app = acp
       event: 'phase',
       status: status(params.sessionId),
     });
+    if (fakeMode === 'timeout') {
+      await new Promise<void>(() => undefined);
+    }
     const permission = await client.request(acp.methods.client.session.requestPermission, {
       sessionId: params.sessionId,
       toolCall: {
@@ -296,6 +306,21 @@ const app = acp
       session.running = false;
       session.sequence += 1;
       return { stopReason: 'cancelled' };
+    }
+    await client.notify(acp.methods.client.session.update, {
+      sessionId: params.sessionId,
+      update: {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: `execute-${session.sequence}`,
+        kind: 'execute',
+        status: 'completed',
+      },
+    });
+    if (fakeMode === 'fail') {
+      session.running = false;
+      session.failed = true;
+      session.sequence += 1;
+      return { stopReason: 'end_turn' };
     }
     await client.notify(acp.methods.client.session.update, {
       sessionId: params.sessionId,

@@ -43,11 +43,7 @@ export function contractFixture(overrides: Partial<TaskContractV1> = {}): TaskCo
     verification: [
       {
         id: 'verify_result',
-        argv: [
-          process.execPath,
-          '-e',
-          "const fs=require('fs');if(fs.readFileSync('result.txt','utf8')!=='offline result\\n')process.exit(1)",
-        ],
+        argv: ['test', '-f', 'result.txt'],
         cwd: '.',
         timeout_seconds: 30,
         proves: ['ac_result'],

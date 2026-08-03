@@ -150,7 +150,8 @@ export function parseTaskContract(input: unknown): TaskContractV1 {
     ...(parsed.data.allowed_commands
       ? {
           allowed_commands: parsed.data.allowed_commands.map((item) => ({
-            ...item,
+            id: item.id,
+            argv: item.argv,
             cwd: normalizeRepositoryCwd(item.cwd, 'allowed_commands.cwd'),
             timeout_seconds: item.timeout_seconds ?? 120,
           })),
