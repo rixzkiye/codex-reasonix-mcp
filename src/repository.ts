@@ -200,7 +200,7 @@ function parsePorcelainAllPaths(value: string): string[] {
 function parseNameStatusPaths(value: string): string[] {
   const fields = nulList(value);
   const paths: string[] = [];
-  for (let index = 0; index < fields.length; ) {
+  for (let index = 0; index < fields.length;) {
     const statusCode = fields[index++];
     if (!statusCode) continue;
     const first = fields[index++];

@@ -1,9 +1,11 @@
+import { mkdtemp, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
 import { loadConfig } from '../../src/config.js';
-import { missingSupervisorFlags, runDeepDoctor } from '../../src/doctor.js';
+import { missingSupervisorFlags, runDeepDoctor, runDoctor } from '../../src/doctor.js';
 
 describe('missingSupervisorFlags', () => {
   it('accepts the single-dash format emitted by Go flag help', () => {
@@ -99,5 +101,66 @@ describe('deep doctor offline conformance', () => {
       providerRuns: 0,
       cleanup: { attempted: false, ok: true },
     });
+  });
+});
+
+describe('standard doctor', () => {
+  it('checks the local binary, supervisor flags, state permissions, and network posture without a Goal', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'reasonix-standard-doctor-'));
+    const executable = path.join(root, 'reasonix.mjs');
+    await writeFile(
+      executable,
+      `const args = process.argv.slice(2);
+if (args.includes('--version')) process.stdout.write('reasonix 1.2.3\\n');
+else if (args.includes('--help')) process.stdout.write('--planner --sandbox-network --workspace-only --sandbox-bash\\n');
+else process.exitCode = 2;
+`,
+    );
+    const report = await runDoctor(
+      loadConfig({
+        stateDir: path.join(root, 'state'),
+        reasonixCommand: process.execPath,
+        reasonixArgs: [executable],
+        networkEnabled: true,
+      }),
+    );
+    expect(report.checks.find((check) => check.name === 'reasonix_binary')).toMatchObject({
+      ok: true,
+    });
+    expect(report.checks.find((check) => check.name === 'supervisor_flags')).toMatchObject({
+      ok: true,
+    });
+    expect(report.checks.find((check) => check.name === 'state_permissions')).toMatchObject({
+      ok: true,
+    });
+    expect(report.checks.find((check) => check.name === 'provider_call')?.detail).toContain(
+      'No ACP session',
+    );
+    expect(report.checks.find((check) => check.name === 'network_default')).toMatchObject({
+      ok: false,
+    });
+    expect(report.deep).toBeUndefined();
+  });
+
+  it('reports missing binaries/flags and attaches an explicitly skipped deep report', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'reasonix-standard-doctor-'));
+    const report = await runDoctor(
+      loadConfig({
+        stateDir: path.join(root, 'state'),
+        reasonixCommand: path.join(root, 'missing-reasonix'),
+      }),
+      { deep: true, allowProviderCall: false },
+    );
+    expect(report.ok).toBe(false);
+    expect(report.checks.find((check) => check.name === 'reasonix_binary')).toMatchObject({
+      ok: false,
+    });
+    expect(report.checks.find((check) => check.name === 'supervisor_flags')?.detail).toContain(
+      'Missing flags',
+    );
+    expect(report.checks.find((check) => check.name === 'provider_call')?.detail).toContain(
+      'explicit deep lane',
+    );
+    expect(report.deep).toMatchObject({ status: 'skipped', providerRuns: 0 });
   });
 });

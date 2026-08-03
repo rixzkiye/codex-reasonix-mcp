@@ -246,28 +246,37 @@ export class PermissionController implements PermissionAccess {
         canAllow: decision.canAllow,
       }) as Record<string, unknown>,
     };
-    await this.dependencies.store.recordEvent(
-      taskId,
-      'interaction_waiting',
-      interaction,
-      (record) => {
-        record.interactions.push(interaction);
-        transitionTask(
-          record,
-          decision.interactionKind === 'input' ? 'waiting_input' : 'waiting_permission',
-          'interaction_waiting',
-          decision.reason,
-        );
-      },
-    );
-    return await new Promise<RequestPermissionResponse>((resolve) => {
-      this.interactions.set(interactionId, {
-        taskId,
-        canAllow: decision.canAllow,
-        params,
-        resolve,
-      });
+    let resolveInteraction!: (response: RequestPermissionResponse) => void;
+    const response = new Promise<RequestPermissionResponse>((resolve) => {
+      resolveInteraction = resolve;
     });
+    this.interactions.set(interactionId, {
+      taskId,
+      canAllow: decision.canAllow,
+      params,
+      resolve: resolveInteraction,
+    });
+    try {
+      await this.dependencies.store.recordEvent(
+        taskId,
+        'interaction_waiting',
+        interaction,
+        (record) => {
+          record.interactions.push(interaction);
+          transitionTask(
+            record,
+            decision.interactionKind === 'input' ? 'waiting_input' : 'waiting_permission',
+            'interaction_waiting',
+            decision.reason,
+          );
+        },
+      );
+    } catch (error) {
+      this.interactions.delete(interactionId);
+      resolveInteraction({ outcome: { outcome: 'cancelled' } });
+      throw error;
+    }
+    return await response;
   }
 
   async onToolCallUpdate(

@@ -50,13 +50,14 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
+    "coverage": "vitest run --coverage",
     "test:unit": "vitest run tests/unit",
     "test:integration": "vitest run tests/integration tests/protocol",
     "test:e2e": "vitest run tests/e2e",
     "pack:check": "pnpm pack --dry-run",
     "package:check": "node scripts/check-package-content.mjs",
     "audit": "pnpm audit --audit-level high",
-    "check": "pnpm lint && pnpm format:check && pnpm typecheck && pnpm test && pnpm build && pnpm package:check && pnpm pack:check",
+    "check": "pnpm lint && pnpm format:check && pnpm typecheck && pnpm coverage && pnpm build && pnpm package:check && pnpm pack:check",
     "prepack": "pnpm build"
   },
   "dependencies": {
@@ -69,6 +70,7 @@
     "@eslint/js": "10.0.1",
     "@types/node": "24.1.0",
     "@types/picomatch": "4.0.3",
+    "@vitest/coverage-v8": "4.1.10",
     "eslint": "10.8.0",
     "prettier": "3.9.6",
     "tsx": "4.23.1",

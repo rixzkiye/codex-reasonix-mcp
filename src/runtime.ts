@@ -83,6 +83,7 @@ export class BridgeRuntime {
     this.permissions.cancelAllInteractions();
     await this.finalization.waitForAll();
     await this.sessions.shutdown();
+    await this.store.drain();
     await this.collision.shutdown();
   }
 }

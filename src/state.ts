@@ -19,6 +19,7 @@ import {
   ACTIVE_HOOK_SENTINEL_SCHEMA_VERSION,
   activeHookSentinelPath as hookSentinelPath,
 } from './hooks.js';
+import { metricForAuditEvent, MetricsStore } from './metrics.js';
 import { redact } from './redaction.js';
 import {
   TASK_RECORD_SCHEMA_VERSION,
@@ -393,12 +394,23 @@ function parseTaskState(raw: string): {
   return { raw, state, record, needsMigration: version === TASK_RECORD_V1_SCHEMA_VERSION };
 }
 
+/** Validates a current persisted task record without performing migration. */
+export function parseTaskRecordJson(raw: string): TaskRecord {
+  const parsed = parseTaskState(raw);
+  if (parsed.needsMigration) {
+    invalidState('Archived task state must be migrated before archival');
+  }
+  return parsed.record;
+}
+
 export class StateStore {
   readonly root: string;
+  readonly metrics: MetricsStore;
   private readonly updates = new Map<string, Promise<unknown>>();
 
   constructor(root: string) {
     this.root = path.resolve(root);
+    this.metrics = new MetricsStore(this.root);
   }
 
   async initialize(): Promise<void> {
@@ -406,6 +418,7 @@ export class StateStore {
     await privateDirectory(this.tasksDir());
     await privateDirectory(this.worktreesDir());
     await privateDirectory(this.locksDir());
+    await this.metrics.initialize();
   }
 
   tasksDir(): string {
@@ -477,12 +490,47 @@ export class StateStore {
     }
   }
 
+  async retiredTaskExists(taskId: string): Promise<boolean> {
+    for (const candidate of [
+      path.join(this.root, 'archive', taskId, 'state.json'),
+      path.join(this.root, 'tombstones', `${taskId}.json`),
+    ]) {
+      try {
+        await stat(candidate);
+        return true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+    }
+    const stagingPrefix = `${taskId}-`;
+    const stagingSuffix =
+      /^[0-9a-f]{64}-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    try {
+      const staging = await readdir(path.join(this.root, 'prune-staging'), {
+        withFileTypes: true,
+      });
+      if (
+        staging.some(
+          (entry) =>
+            entry.isDirectory() &&
+            entry.name.startsWith(stagingPrefix) &&
+            stagingSuffix.test(entry.name.slice(stagingPrefix.length)),
+        )
+      ) {
+        return true;
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    return false;
+  }
+
   async createTask(record: TaskRecord): Promise<void> {
     if (record.schemaVersion !== TASK_RECORD_SCHEMA_VERSION) {
       invalidState(`Task records must use schemaVersion ${String(TASK_RECORD_SCHEMA_VERSION)}`);
     }
     parseTaskRecordFields(record as unknown as Record<string, unknown>);
-    if (await this.exists(record.taskId)) {
+    if ((await this.exists(record.taskId)) || (await this.retiredTaskExists(record.taskId))) {
       throw new BridgeError('task_conflict', `Task already exists: ${record.taskId}`);
     }
     await privateDirectory(this.taskDir(record.taskId));
@@ -601,6 +649,8 @@ export class StateStore {
     }
     record.eventSequence = event.seq;
     await this.saveTask(record);
+    const metric = metricForAuditEvent(type, data, record);
+    if (metric) await this.metrics.record(taskId, metric);
     return event;
   }
 
@@ -610,7 +660,7 @@ export class StateStore {
     data: unknown,
     update?: (record: TaskRecord) => void,
   ): Promise<TaskRecord> {
-    return await this.updateTask(taskId, async (record) => {
+    const record = await this.updateTask(taskId, async (record) => {
       update?.(record);
       const event: JournalEvent = {
         seq: record.eventSequence + 1,
@@ -627,6 +677,9 @@ export class StateStore {
       }
       record.eventSequence = event.seq;
     });
+    const metric = metricForAuditEvent(type, data, record);
+    if (metric) await this.metrics.record(taskId, metric);
+    return record;
   }
 
   async readEvents(taskId: string, afterSequence = 0): Promise<JournalEvent[]> {
@@ -686,6 +739,16 @@ export class StateStore {
         const timer = setTimeout(resolve, Math.min(100, Math.max(1, deadline - Date.now())));
         timer.unref();
       });
+    }
+  }
+
+  /** Waits until every state mutation already accepted by this store settles. */
+  async drain(): Promise<void> {
+    for (;;) {
+      const pending = [...this.updates.values()];
+      if (pending.length === 0) return;
+      await Promise.allSettled(pending);
+      if (pending.every((item, index) => item === [...this.updates.values()][index])) return;
     }
   }
 }

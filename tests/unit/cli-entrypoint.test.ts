@@ -3,11 +3,24 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { isCliEntrypoint } from '../../src/cli-entrypoint.js';
 import { runContractLintCli } from '../../src/contract-lint.js';
+import { main } from '../../src/index.js';
 import { contractFixture } from '../helpers.js';
+
+const originalStateDir = process.env.CODEX_REASONIX_STATE_DIR;
+const originalReasonixBin = process.env.REASONIX_BIN;
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  process.exitCode = undefined;
+  if (originalStateDir === undefined) delete process.env.CODEX_REASONIX_STATE_DIR;
+  else process.env.CODEX_REASONIX_STATE_DIR = originalStateDir;
+  if (originalReasonixBin === undefined) delete process.env.REASONIX_BIN;
+  else process.env.REASONIX_BIN = originalReasonixBin;
+});
 
 describe('CLI entrypoint detection', () => {
   it('recognizes direct and package-bin symlink invocation paths', async () => {
@@ -89,5 +102,75 @@ describe('contract lint CLI', () => {
     const result = await runContractLintCli(args);
     expect(result.exitCode).toBe(2);
     expect(result.stderr).toContain('Usage: codex-reasonix-mcp contract lint');
+  });
+});
+
+describe('package CLI dispatch', () => {
+  function captureProcessOutput(): { stdout: string[]; stderr: string[] } {
+    const output = { stdout: [] as string[], stderr: [] as string[] };
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      output.stdout.push(String(chunk));
+      return true;
+    });
+    vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      output.stderr.push(String(chunk));
+      return true;
+    });
+    return output;
+  }
+
+  it.each(['version', '--version', '-v'])('prints the version for %s', async (command) => {
+    const output = captureProcessOutput();
+    await main(['node', 'codex-reasonix-mcp', command]);
+    expect(output.stdout.join('')).toMatch(/^0\.1\.1/);
+    expect(output.stderr).toEqual([]);
+  });
+
+  it('dispatches contract, hooks, and task commands through the package entrypoint', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'reasonix-main-cli-'));
+    const contract = path.join(root, 'contract.json');
+    await writeFile(contract, `${JSON.stringify(contractFixture())}\n`);
+    process.env.CODEX_REASONIX_STATE_DIR = path.join(root, 'state');
+    const output = captureProcessOutput();
+
+    await main(['node', 'codex-reasonix-mcp', 'contract', 'lint', '--file', contract]);
+    await main(['node', 'codex-reasonix-mcp', 'hooks', 'unknown']);
+    expect(process.exitCode).toBe(2);
+    process.exitCode = undefined;
+    await main(['node', 'codex-reasonix-mcp', 'task', 'list', '--json']);
+
+    expect(output.stdout.join('')).toContain('valid TaskContractV1');
+    expect(output.stdout.join('')).toContain('[]');
+    expect(output.stderr.join('')).toContain('codex-reasonix-mcp hooks install');
+  });
+
+  it('rejects invalid doctor and top-level command grammars without provider calls', async () => {
+    const output = captureProcessOutput();
+    await main(['node', 'codex-reasonix-mcp', 'doctor', '--allow-provider-call']);
+    expect(process.exitCode).toBe(2);
+    process.exitCode = undefined;
+    await main(['node', 'codex-reasonix-mcp', 'unknown']);
+    expect(process.exitCode).toBe(2);
+    expect(output.stderr.join('')).toContain('doctor [--deep --allow-provider-call]');
+    expect(output.stderr.join('')).toContain('codex-reasonix-mcp [serve|doctor');
+  });
+
+  it('runs the standard doctor lane without opening a provider session', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'reasonix-main-doctor-'));
+    process.env.CODEX_REASONIX_STATE_DIR = path.join(root, 'state');
+    process.env.REASONIX_BIN = process.execPath;
+    const output = captureProcessOutput();
+
+    await main(['node', 'codex-reasonix-mcp', 'doctor']);
+
+    expect(process.exitCode).toBe(1);
+    const report = JSON.parse(output.stdout.join('')) as {
+      ok: boolean;
+      checks: Array<{ name: string; detail: string }>;
+    };
+    expect(report.ok).toBe(false);
+    expect(report.checks.find((check) => check.name === 'provider_call')?.detail).toContain(
+      'No ACP session',
+    );
   });
 });
