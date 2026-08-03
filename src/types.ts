@@ -25,6 +25,9 @@ export const TERMINAL_STATUSES = new Set<TaskStatus>([
   'closed',
 ]);
 
+export const TASK_RECORD_SCHEMA_VERSION = 2 as const;
+export const TASK_RECORD_V1_SCHEMA_VERSION = 1 as const;
+
 export interface RepositoryIdentity {
   id: string;
   root: string;
@@ -77,8 +80,7 @@ export interface InteractionRecord {
   response?: Record<string, unknown>;
 }
 
-export interface TaskRecord {
-  schemaVersion: 1;
+interface TaskRecordFields {
   taskId: string;
   contract: TaskContractV1;
   contractHash: string;
@@ -111,6 +113,16 @@ export interface TaskRecord {
   usage: UsageTotals;
   reviewSummary?: string;
   commitHash?: string;
+}
+
+/** Persisted v1 task records: the only version eligible for migration to v2. */
+export interface TaskRecordV1 extends TaskRecordFields {
+  schemaVersion: typeof TASK_RECORD_V1_SCHEMA_VERSION;
+}
+
+/** Persisted task records: the current schema version. */
+export interface TaskRecord extends TaskRecordFields {
+  schemaVersion: typeof TASK_RECORD_SCHEMA_VERSION;
 }
 
 export interface JournalEvent {
