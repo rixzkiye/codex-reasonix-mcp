@@ -298,7 +298,10 @@ function parseSourceCollisionEvidence(value: unknown): SourceCollisionEvidence {
  * version gate itself lives in {@link parseTaskState}. Revalidates the stored
  * TaskContractV1 and requires contractHash to match its canonical hash.
  */
-function parseTaskRecordFields(state: Record<string, unknown>): TaskRecord {
+function parseTaskRecordFields(
+  state: Record<string, unknown>,
+  requireCanonicalContract = true,
+): TaskRecord {
   let contract: TaskContractV1;
   try {
     contract = parseTaskContract(state.contract);
@@ -313,7 +316,7 @@ function parseTaskRecordFields(state: Record<string, unknown>): TaskRecord {
   }
   // The stored contract must be the canonical parsed form: the record's
   // contract and the contractHash authority must never diverge.
-  if (JSON.stringify(contract) !== JSON.stringify(state.contract)) {
+  if (requireCanonicalContract && JSON.stringify(contract) !== JSON.stringify(state.contract)) {
     invalidState('Stored contract is not in canonical form');
   }
   const record: TaskRecord = {
@@ -390,7 +393,7 @@ function parseTaskState(raw: string): {
   if (version !== TASK_RECORD_V1_SCHEMA_VERSION && version !== TASK_RECORD_SCHEMA_VERSION) {
     invalidState(`Unsupported task state schemaVersion: ${String(version)}`);
   }
-  const record = parseTaskRecordFields(state);
+  const record = parseTaskRecordFields(state, version === TASK_RECORD_SCHEMA_VERSION);
   return { raw, state, record, needsMigration: version === TASK_RECORD_V1_SCHEMA_VERSION };
 }
 
@@ -592,6 +595,7 @@ export class StateStore {
         const migrated: Record<string, unknown> = {
           ...loaded.state,
           schemaVersion: TASK_RECORD_SCHEMA_VERSION,
+          contract: loaded.record.contract,
         };
         await atomicWrite(this.statePath(taskId), `${JSON.stringify(migrated, null, 2)}\n`);
       }

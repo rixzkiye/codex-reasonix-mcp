@@ -253,6 +253,30 @@ describe('private persistent state', () => {
     expect((await store.loadTask(task.taskId)).schemaVersion).toBe(2);
   });
 
+  it('canonicalizes a hash-valid legacy v1 contract during migration', async () => {
+    const store = await newStore();
+    const task = richTask('migrate-legacy-contract-order');
+    await store.createTask(task);
+    const legacy = structuredClone(task) as unknown as Record<string, unknown>;
+    legacy.schemaVersion = 1;
+    legacy.contract = Object.fromEntries(
+      Object.entries(legacy.contract as Record<string, unknown>).reverse(),
+    );
+    await writeFile(store.statePath(task.taskId), `${JSON.stringify(legacy, null, 2)}\n`, 'utf8');
+
+    const loaded = await store.loadTask(task.taskId);
+
+    expect(loaded).toEqual(task);
+    const persisted = JSON.parse(await readFile(store.statePath(task.taskId), 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    expect(persisted.schemaVersion).toBe(2);
+    expect(persisted.contract).toEqual(task.contract);
+    expect(JSON.stringify(persisted.contract)).toBe(JSON.stringify(task.contract));
+    expect(persisted.contractHash).toBe(task.contractHash);
+  });
+
   it('loads valid v2 state and rejects malformed, corrupt, or unknown state with invalid_state without rewriting', async () => {
     const store = await newStore();
     const task = richTask('corrupt-me');
