@@ -5,9 +5,10 @@ import process from 'node:process';
 
 import type { BridgeConfig } from './config.js';
 import { runChecked, runCommand } from './command.js';
+import { BRIDGE_ERROR_CODES } from './errors.js';
 import { BridgeRuntime } from './runtime.js';
 import { StateStore } from './state.js';
-import type { JournalEvent, TaskRecord, UsageTotals } from './types.js';
+import type { JournalEvent, TaskRecord, TaskStatus, UsageTotals } from './types.js';
 
 export interface DoctorCheck {
   name: string;
@@ -28,7 +29,7 @@ export interface DeepDoctorReport {
   requested: boolean;
   allowed: boolean;
   ok: boolean;
-  status: 'skipped' | 'passed' | 'failed' | 'timed_out';
+  status: 'skipped' | 'passed' | 'failed' | 'timed_out' | 'usage_limited';
   providerRuns: number;
   durationMs: number;
   usage: UsageTotals | null;
@@ -36,7 +37,19 @@ export interface DeepDoctorReport {
   currency: string | null;
   proofs: DeepDoctorProofs;
   cleanup: { attempted: boolean; ok: boolean; detail: string };
+  diagnostics: DeepDoctorDiagnostics;
   detail: string;
+}
+
+export interface DeepDoctorDiagnostics {
+  termination: 'skipped' | 'completed' | 'failure' | 'timeout' | 'provider_usage_limit';
+  providerTokenLimit: number;
+  observedProviderTokens: number;
+  lastTaskStatus: TaskStatus | null;
+  lastTaskPhase: string | null;
+  lastTaskReason: string | null;
+  eventCount: number;
+  eventTypeTail: string[];
 }
 
 export interface DoctorReport {
@@ -51,6 +64,7 @@ export interface DoctorOptions {
   deep?: boolean;
   allowProviderCall?: boolean;
   deepTimeoutMs?: number;
+  deepProviderTokenLimit?: number;
   deepDependencies?: DeepDoctorDependencies;
 }
 
@@ -63,8 +77,19 @@ export interface DeepDoctorDependencies {
 
 const supervisorFlags = ['--planner', '--sandbox-network', '--workspace-only', '--sandbox-bash'];
 const DEEP_TIMEOUT_MAX_MS = 10 * 60_000;
+export const DEFAULT_DEEP_DOCTOR_PROVIDER_TOKEN_LIMIT = 50_000;
+export const DEEP_DOCTOR_EVENT_TYPE_TAIL_LIMIT = 12;
 
 class DeepDoctorTimeout extends Error {}
+
+class DeepDoctorUsageLimit extends Error {
+  constructor(
+    readonly observedTokens: number,
+    readonly limitTokens: number,
+  ) {
+    super('Deep doctor provider usage limit reached');
+  }
+}
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -149,14 +174,33 @@ async function createDeepRepository(root: string): Promise<{ repository: string;
   return { repository, head };
 }
 
+function providerTokenCount(usage: UsageTotals): number {
+  const inputTokens = Math.max(usage.promptTokens, usage.cacheHitTokens + usage.cacheMissTokens);
+  return Math.min(
+    Number.MAX_SAFE_INTEGER,
+    inputTokens + usage.completionTokens + usage.reasoningTokens,
+  );
+}
+
+function providerTokenLimit(value: number | undefined): number {
+  if (value === undefined) return DEFAULT_DEEP_DOCTOR_PROVIDER_TOKEN_LIMIT;
+  if (!Number.isFinite(value) || value < 1) return DEFAULT_DEEP_DOCTOR_PROVIDER_TOKEN_LIMIT;
+  return Math.min(Number.MAX_SAFE_INTEGER, Math.floor(value));
+}
+
 async function waitForTask(
   runtime: BridgeRuntime,
   taskId: string,
   deadline: number,
+  tokenLimit: number,
   accept: (task: TaskRecord) => boolean,
 ): Promise<TaskRecord> {
   for (;;) {
     const task = await runtime.store.loadTask(taskId);
+    const observedTokens = providerTokenCount(task.usage);
+    if (observedTokens >= tokenLimit) {
+      throw new DeepDoctorUsageLimit(observedTokens, tokenLimit);
+    }
     if (accept(task)) return task;
     if (Date.now() >= deadline) throw new DeepDoctorTimeout('Deep doctor exceeded its deadline');
     await new Promise<void>((resolve) => {
@@ -170,10 +214,18 @@ async function waitForEvents(
   runtime: BridgeRuntime,
   taskId: string,
   deadline: number,
+  tokenLimit: number,
   accept: (events: JournalEvent[]) => boolean,
 ): Promise<JournalEvent[]> {
   for (;;) {
-    const events = await runtime.store.readEvents(taskId);
+    const [events, task] = await Promise.all([
+      runtime.store.readEvents(taskId),
+      runtime.store.loadTask(taskId),
+    ]);
+    const observedTokens = providerTokenCount(task.usage);
+    if (observedTokens >= tokenLimit) {
+      throw new DeepDoctorUsageLimit(observedTokens, tokenLimit);
+    }
     if (accept(events)) return events;
     if (Date.now() >= deadline) throw new DeepDoctorTimeout('Deep doctor exceeded its deadline');
     await new Promise<void>((resolve) => {
@@ -193,6 +245,164 @@ function emptyProofs(): DeepDoctorProofs {
   };
 }
 
+const SAFE_DEEP_PHASES = new Set([
+  'queued',
+  'creating_worktree',
+  'starting_reasonix',
+  'goal_running',
+  'goal_resuming',
+  'implementing',
+  'review_ready',
+  'codex_review',
+  'preflight',
+  'verification',
+  'staging',
+  'committing',
+  'completed',
+  'cancelled',
+  'closed',
+  'prompt_failed',
+  'reasonix_error',
+  'command_timeout',
+  'repeated_policy_denial',
+  'command_postflight_failed',
+  'source_collision',
+  'restart_recovery',
+  'interaction_waiting',
+  'worker_crashed',
+]);
+
+function safeTaskPhase(phase: string): string {
+  return SAFE_DEEP_PHASES.has(phase) || /^repair_[12]$/.test(phase) ? phase : 'other';
+}
+
+function safeTaskReason(reason: string | undefined): string | null {
+  if (!reason) return null;
+  const code = BRIDGE_ERROR_CODES.find(
+    (candidate) => reason === candidate || reason.startsWith(`${candidate}:`),
+  );
+  return code ?? 'redacted';
+}
+
+function safeEventType(type: string): string {
+  return /^[a-z][a-z0-9_]{0,63}$/.test(type) ? type : 'other';
+}
+
+function privacySafeUsage(usage: UsageTotals): UsageTotals {
+  const safeInteger = (value: number): number =>
+    Number.isSafeInteger(value) && value >= 0 ? value : 0;
+  const safeNumber = (value: number | null): number | null =>
+    value !== null && Number.isFinite(value) && value >= 0
+      ? Math.min(value, Number.MAX_SAFE_INTEGER)
+      : null;
+  const source = /^(?:reasonix|executor|provider)$/.test(usage.usageSource)
+    ? usage.usageSource
+    : 'redacted';
+  return {
+    promptTokens: safeInteger(usage.promptTokens),
+    completionTokens: safeInteger(usage.completionTokens),
+    reasoningTokens: safeInteger(usage.reasoningTokens),
+    cacheHitTokens: safeInteger(usage.cacheHitTokens),
+    cacheMissTokens: safeInteger(usage.cacheMissTokens),
+    cacheHitRatio:
+      usage.cacheHitRatio !== null &&
+      Number.isFinite(usage.cacheHitRatio) &&
+      usage.cacheHitRatio >= 0 &&
+      usage.cacheHitRatio <= 1
+        ? usage.cacheHitRatio
+        : null,
+    estimatedCost: safeNumber(usage.estimatedCost),
+    currency:
+      usage.currency && ['USD', 'EUR', 'GBP', '$', '€', '£'].includes(usage.currency)
+        ? usage.currency
+        : null,
+    usageSource: source,
+  };
+}
+
+function initialDiagnostics(tokenLimit: number): DeepDoctorDiagnostics {
+  return {
+    termination: 'failure',
+    providerTokenLimit: tokenLimit,
+    observedProviderTokens: 0,
+    lastTaskStatus: null,
+    lastTaskPhase: null,
+    lastTaskReason: null,
+    eventCount: 0,
+    eventTypeTail: [],
+  };
+}
+
+async function sourceIsUnchanged(repository: string, expectedHead: string): Promise<boolean> {
+  try {
+    const [sourceStatus, sourceHead] = await Promise.all([
+      runChecked({
+        argv: ['git', 'status', '--porcelain=v1', '--untracked-files=all'],
+        cwd: repository,
+      }),
+      runChecked({ argv: ['git', 'rev-parse', 'HEAD'], cwd: repository }),
+    ]);
+    return sourceStatus.stdout.length === 0 && sourceHead.stdout.trim() === expectedHead;
+  } catch {
+    return false;
+  }
+}
+
+async function collectDeepEvidence(
+  runtime: BridgeRuntime,
+  fixture: { repository: string; head: string },
+  proofs: DeepDoctorProofs,
+  diagnostics: DeepDoctorDiagnostics,
+  preserveTaskState: boolean,
+): Promise<UsageTotals | null> {
+  const task = await runtime.store.loadTask('deep-doctor').catch(() => undefined);
+  const events = await runtime.store.readEvents('deep-doctor').catch(() => [] as JournalEvent[]);
+  const structuredPermission = events.some(
+    (event) =>
+      event.type === 'permission_auto_allowed' &&
+      (event.data as { reason?: unknown }).reason === 'Structured edit is inside write_scope',
+  );
+  let structuredFile = false;
+  if (task) {
+    try {
+      structuredFile = (await stat(path.join(task.worktree, 'result.txt'))).isFile();
+    } catch {
+      structuredFile = false;
+    }
+  }
+  proofs.structuredEdit ||= structuredPermission && structuredFile;
+  const staticPermission = events.some(
+    (event) =>
+      event.type === 'permission_auto_allowed' &&
+      (event.data as { reason?: unknown }).reason === 'Exact contract verification command',
+  );
+  proofs.staticCommand ||=
+    staticPermission && events.some((event) => event.type === 'command_postflight_passed');
+  if (task) {
+    proofs.exactVerification ||=
+      task.verification.length === 1 &&
+      task.verification[0]?.id === 'verify_result' &&
+      task.verification[0].passed;
+    proofs.finalCommit ||=
+      task.status === 'completed' && /^[0-9a-f]{40}$/.test(task.commitHash ?? '');
+    diagnostics.observedProviderTokens = Math.max(
+      diagnostics.observedProviderTokens,
+      providerTokenCount(task.usage),
+    );
+    if (!preserveTaskState || diagnostics.lastTaskStatus === null) {
+      diagnostics.lastTaskStatus = task.status;
+      diagnostics.lastTaskPhase = safeTaskPhase(task.phase);
+      diagnostics.lastTaskReason = safeTaskReason(task.reason);
+    }
+  }
+  proofs.sourceUnchanged = await sourceIsUnchanged(fixture.repository, fixture.head);
+  diagnostics.eventCount = Math.max(diagnostics.eventCount, events.length);
+  diagnostics.eventTypeTail = events
+    .slice(-DEEP_DOCTOR_EVENT_TYPE_TAIL_LIMIT)
+    .map((event) => safeEventType(event.type));
+  return task ? privacySafeUsage(task.usage) : null;
+}
+
 /**
  * Executes the explicit live conformance lane. The normal doctor never calls
  * this function. Tests inject the fake ACP executable through BridgeConfig;
@@ -200,10 +410,14 @@ function emptyProofs(): DeepDoctorProofs {
  */
 export async function runDeepDoctor(
   config: BridgeConfig,
-  options: Pick<DoctorOptions, 'allowProviderCall' | 'deepTimeoutMs'> = {},
+  options: Pick<
+    DoctorOptions,
+    'allowProviderCall' | 'deepTimeoutMs' | 'deepProviderTokenLimit'
+  > = {},
   dependencies: DeepDoctorDependencies = {},
 ): Promise<DeepDoctorReport> {
   const started = (dependencies.now ?? Date.now)();
+  const tokenLimit = providerTokenLimit(options.deepProviderTokenLimit);
   if (!options.allowProviderCall) {
     return {
       requested: true,
@@ -217,6 +431,7 @@ export async function runDeepDoctor(
       currency: null,
       proofs: emptyProofs(),
       cleanup: { attempted: false, ok: true, detail: 'No temporary resources created' },
+      diagnostics: { ...initialDiagnostics(tokenLimit), termination: 'skipped' },
       detail: 'Skipped: --allow-provider-call is required for deep doctor',
     };
   }
@@ -228,11 +443,14 @@ export async function runDeepDoctor(
   const deadline = Date.now() + timeoutMs;
   let root: string | undefined;
   let runtime: BridgeRuntime | undefined;
+  let fixture: { repository: string; head: string } | undefined;
   let providerRuns = 0;
   let usage: UsageTotals | null = null;
   const proofs = emptyProofs();
+  const diagnostics = initialDiagnostics(tokenLimit);
   let status: DeepDoctorReport['status'];
   let detail: string;
+  let preserveFailureTaskState = false;
   let cleanup = { attempted: false, ok: true, detail: 'No temporary resources created' };
 
   try {
@@ -240,7 +458,7 @@ export async function runDeepDoctor(
       dependencies.createTempRoot ??
       (async () => await mkdtemp(path.join(os.tmpdir(), 'codex-reasonix-deep-doctor-')))
     )();
-    const fixture = await createDeepRepository(root);
+    fixture = await createDeepRepository(root);
     const deepConfig: BridgeConfig = {
       ...config,
       stateDir: path.join(root, 'state'),
@@ -281,32 +499,23 @@ export async function runDeepDoctor(
       runtime,
       'deep-doctor',
       deadline,
+      tokenLimit,
       (task) =>
         task.status === 'review_required' || task.status === 'paused' || task.status === 'failed',
     );
     if (review.status !== 'review_required') {
-      throw new Error(`Goal stopped in ${review.status}: ${review.reason ?? review.phase}`);
+      throw new Error('Deep doctor Goal stopped before review readiness');
     }
-    const events = await waitForEvents(
+    await waitForEvents(
       runtime,
       'deep-doctor',
       deadline,
+      tokenLimit,
       (items) =>
         items.some((event) => event.type === 'command_postflight_passed') ||
         items.some((event) => event.type === 'command_postflight_failed'),
     );
-    proofs.structuredEdit = events.some(
-      (event) =>
-        event.type === 'permission_auto_allowed' &&
-        (event.data as { reason?: unknown }).reason === 'Structured edit is inside write_scope',
-    );
-    const staticPermission = events.some(
-      (event) =>
-        event.type === 'permission_auto_allowed' &&
-        (event.data as { reason?: unknown }).reason === 'Exact contract verification command',
-    );
-    proofs.staticCommand =
-      staticPermission && events.some((event) => event.type === 'command_postflight_passed');
+    usage = (await collectDeepEvidence(runtime, fixture, proofs, diagnostics, false)) ?? usage;
     await runtime.control(
       {
         task_id: 'deep-doctor',
@@ -320,35 +529,49 @@ export async function runDeepDoctor(
       runtime,
       'deep-doctor',
       deadline,
+      tokenLimit,
       (task) =>
         task.status === 'completed' || task.status === 'commit_failed' || task.status === 'failed',
     );
-    usage = completed.usage;
-    proofs.exactVerification =
-      completed.verification.length === 1 &&
-      completed.verification[0]?.id === 'verify_result' &&
-      completed.verification[0].passed;
-    proofs.finalCommit =
-      completed.status === 'completed' && /^[0-9a-f]{40}$/.test(completed.commitHash ?? '');
-    const sourceStatus = await runChecked({
-      argv: ['git', 'status', '--porcelain=v1', '--untracked-files=all'],
-      cwd: fixture.repository,
-    });
-    const sourceHead = await runChecked({
-      argv: ['git', 'rev-parse', 'HEAD'],
-      cwd: fixture.repository,
-    });
-    proofs.sourceUnchanged =
-      sourceStatus.stdout.length === 0 && sourceHead.stdout.trim() === fixture.head;
+    usage = privacySafeUsage(completed.usage);
+    usage = (await collectDeepEvidence(runtime, fixture, proofs, diagnostics, false)) ?? usage;
     if (providerRuns !== 1 || Object.values(proofs).some((value) => !value)) {
       throw new Error('Deep doctor conformance proof is incomplete');
     }
     status = 'passed';
+    diagnostics.termination = 'completed';
     detail = 'One bounded Goal produced a reviewed commit with complete conformance evidence';
   } catch (error) {
-    status = error instanceof DeepDoctorTimeout ? 'timed_out' : 'failed';
-    detail = error instanceof Error ? error.message : String(error);
-    if (runtime) {
+    if (error instanceof DeepDoctorUsageLimit) {
+      status = 'usage_limited';
+      diagnostics.termination = 'provider_usage_limit';
+      diagnostics.observedProviderTokens = Math.max(
+        diagnostics.observedProviderTokens,
+        error.observedTokens,
+      );
+      detail = `Provider usage limit reached at ${String(error.observedTokens)} tokens (limit ${String(error.limitTokens)})`;
+    } else if (error instanceof DeepDoctorTimeout) {
+      status = 'timed_out';
+      diagnostics.termination = 'timeout';
+      detail = 'Deep doctor exceeded its absolute deadline';
+    } else {
+      status = 'failed';
+      diagnostics.termination = 'failure';
+      detail =
+        error instanceof Error &&
+        [
+          'Deep doctor Goal stopped before review readiness',
+          'Deep doctor conformance proof is incomplete',
+        ].includes(error.message)
+          ? error.message
+          : 'Deep doctor failed before conformance completed';
+    }
+    if (runtime && fixture) {
+      usage =
+        (await collectDeepEvidence(runtime, fixture, proofs, diagnostics, false).catch(
+          () => null,
+        )) ?? usage;
+      preserveFailureTaskState = diagnostics.lastTaskStatus !== null;
       const task = await runtime.store.loadTask('deep-doctor').catch(() => undefined);
       if (
         task &&
@@ -360,10 +583,20 @@ export async function runDeepDoctor(
           .control({ task_id: task.taskId, action: 'cancel' }, {})
           .catch(() => undefined);
       }
-      usage = task?.usage ?? usage;
+      usage = task ? privacySafeUsage(task.usage) : usage;
     }
   } finally {
     await runtime?.shutdown().catch(() => undefined);
+    if (runtime && fixture) {
+      usage =
+        (await collectDeepEvidence(
+          runtime,
+          fixture,
+          proofs,
+          diagnostics,
+          preserveFailureTaskState,
+        ).catch(() => null)) ?? usage;
+    }
     if (root) {
       cleanup = { attempted: true, ok: true, detail: 'Temporary repo and state removed' };
       try {
@@ -371,11 +604,11 @@ export async function runDeepDoctor(
           dependencies.removeTempRoot ??
           (async (value) => await rm(value, { recursive: true, force: true }))
         )(root);
-      } catch (error) {
+      } catch {
         cleanup = {
           attempted: true,
           ok: false,
-          detail: error instanceof Error ? error.message : String(error),
+          detail: 'Temporary cleanup failed',
         };
       }
     }
@@ -394,6 +627,7 @@ export async function runDeepDoctor(
     currency: usage?.currency ?? null,
     proofs,
     cleanup,
+    diagnostics,
     detail,
   };
 }
@@ -519,6 +753,7 @@ export async function runDoctor(
       {
         allowProviderCall: options.allowProviderCall,
         deepTimeoutMs: options.deepTimeoutMs,
+        deepProviderTokenLimit: options.deepProviderTokenLimit,
       },
       options.deepDependencies,
     );

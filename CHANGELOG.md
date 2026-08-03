@@ -2,6 +2,76 @@
 
 All notable changes are documented here. Versions follow Semantic Versioning.
 
+## [0.2.0-rc.2] - 2026-08-03
+
+This source tree prepares a second release candidate after the first local live
+conformance run reached its ten-minute deadline and was not published.
+
+### Fixed
+
+- Stop deep-doctor provider runaway at 50,000 cumulative input, completion, and
+  reasoning tokens while retaining the absolute ten-minute deadline.
+- Capture privacy-safe partial proofs, task-state classes, and a bounded event
+  type tail after state drain but before mandatory temporary-state cleanup.
+- Redact raw failure details, phase/reason values, provider usage source, and
+  unsupported currency values without hiding safe usage/cost totals.
+
+## [0.2.0-rc.1] - 2026-08-03
+
+The first local `0.2.0` candidate failed live conformance and was not published
+to npm.
+
+### Added
+
+- Add shell-first command supervision based on private static argv v1 metadata,
+  audited read-only commands, exact contract command matching, immutable hard
+  denials, per-command watchdogs, and bounded denial-loop recovery.
+- Add optional `allowed_commands` to `TaskContractV1`, contract linting from a
+  file or stdin, and exact argv plus repository-relative cwd matching while
+  retaining verification as the sole automated acceptance-evidence source.
+- Add source-collision authority across resume, mutation, review readiness, and
+  finalization, plus an optional user-level Codex hook guardrail that preserves
+  third-party hooks and still requires manual trust through `/hooks`.
+- Add `task list`, terminal-task archive, age-gated prune, permanent tombstones,
+  crash recovery, and dry-run-by-default mutation commands.
+- Add privacy-safe local metrics for permission classes, denial loops, command
+  outcomes, source collisions, lifecycle duration, verification, and provider
+  usage without storing prompt, argv, output, secret, or file contents.
+- Add an explicit deep-doctor conformance lane that permits exactly one bounded
+  provider Goal only with `--deep --allow-provider-call`, reports usage/cost and
+  proof results, and always attempts temporary-resource cleanup.
+
+### Changed
+
+- Replace generic MCP outputs with concrete success schemas for the existing
+  three tools. Successful calls return matching `structuredContent`; errors use
+  a stable redacted envelope with `code`, `message`, `retryable`, and a closed
+  `next_action` value.
+- Correct MCP annotations: delegate/control are mutating, destructive,
+  non-idempotent, open-world operations; inspect is read-only, non-destructive,
+  idempotent, and closed-world.
+- Split the runtime into supervision, permission, collision, finalization,
+  inspection, and operation modules behind a thin façade.
+- Validate persisted task records field-by-field, migrate v1 records atomically
+  to v2, and reject corrupt or unknown future state versions before mutation.
+- Make standard `doctor` local-only: it checks executables, flags, platform,
+  sandbox availability, and private state permissions without creating an ACP
+  session or calling a provider.
+- Gate `pnpm check` on V8 coverage of at least 80% lines, statements, and
+  functions plus 75% branches.
+
+### Security
+
+- Treat Git mutations or ref/history rewrites, remotes, publish/release, network access,
+  credentials, privilege escalation, destructive filesystem operations,
+  shell/eval, inline interpreters, metadata mismatch, and cwd escape as
+  immutable denials that contracts cannot override.
+- Compare source dirty paths and committed movement since the task base against
+  `write_scope`; collisions pause or block work without resetting, stashing, or
+  deleting user changes.
+- Require archive ownership and cleanliness checks, preserve worker refs and
+  commits, and reduce eligible old archives only to integrity-bound tombstones.
+
 ## [0.1.1] - 2026-08-02
 
 ### Changed

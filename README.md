@@ -7,100 +7,178 @@
 ![Codex supervising a Reasonix worker through the security-first MCP bridge](docs/assets/codex-reasonix-bridge.svg)
 
 `codex-reasonix-mcp` is a security-first MCP bridge that lets Codex supervise
-Reasonix as an implementation worker. Codex owns the contract, review, and final
-commit decision. Reasonix works in an isolated Git worktree through ACP Goal
-mode. The bridge never pushes, merges, or changes the caller's main worktree.
+Reasonix as the implementation worker. Codex owns the immutable contract,
+review, and final commit decision. Reasonix works in an isolated Git worktree
+through ACP Goal mode. The bridge never pushes, merges, or changes the caller's
+main worktree.
 
-This repository is generic to Git repositories. It contains no Akademi-specific
-configuration, LLM router, or Codex source modification.
+The core is generic to Git repositories. It contains no application-specific
+paths, LLM router, native-Windows implementation, or Codex source modification.
 
 ## Release status
 
-The current package version is the stable `0.1.1` release. Official Reasonix
-`v1.19.0` includes the ACP v1 supervisor and status capabilities required by
-the bridge. Runtime capability checks remain authoritative, and incompatible
-binaries fail closed before any model prompt is sent.
+The last published stable npm release is `0.1.1`. This source tree is prepared
+as `0.2.0-rc.2`; that version is not available from npm until its GitHub
+prerelease and trusted-publishing workflow complete successfully. Official
+Reasonix `v1.19.0` remains the documented compatibility baseline, while runtime
+capability checks—not a version string—remain authoritative.
 
 ## Requirements
 
 - Node.js 22 or newer
 - pnpm 10 for source development
-- Git 2.36 or newer (worktrees plus `git hook run`)
+- Git 2.36 or newer
 - Linux, macOS, or Windows through WSL; native Windows is rejected
-- Reasonix v1.19.0 or a compatible newer build with the required ACP v1
-  supervisor and status capabilities
+- Reasonix v1.19.0 or a compatible newer build with ACP v1 supervisor/status
+  capabilities and static command metadata v1
 - Bubblewrap on Linux/WSL or Seatbelt on macOS
-- A configured Reasonix provider exposing `deepseek-v4-flash`
+- A configured Reasonix provider exposing the selected model
 
 Reasonix, provider credentials, and provider billing remain user-managed. This
 package neither downloads nor bundles Reasonix.
 
 ## Install for Codex
 
-Pin the exact bridge version when registering the MCP server:
+Use the published stable package today:
 
 ```sh
 codex mcp add reasonix-worker -- npx -y codex-reasonix-mcp@0.1.1
 ```
 
-For development against a locally built Reasonix checkout:
+For a local checkout of this release-candidate tree:
 
 ```sh
-codex mcp add reasonix-worker \
-  --env REASONIX_BIN=/absolute/path/to/reasonix \
-  -- npx -y codex-reasonix-mcp@0.1.1
+pnpm install --frozen-lockfile
+pnpm build
+codex mcp add reasonix-worker -- node /absolute/path/to/codex-reasonix-mcp/dist/index.js
 ```
 
-Run the non-model diagnostic before delegating work:
+After `0.2.0-rc.2` is actually published, consumers can pin that exact version
+instead of relying on a moving dist-tag. Prereleases publish under `next`;
+stable releases publish under `latest`.
+
+## Diagnostics
+
+Standard doctor is local-only and does not create an ACP session or call a
+provider:
 
 ```sh
-npx -y codex-reasonix-mcp@0.1.1 doctor
+codex-reasonix-mcp doctor
 ```
 
-`doctor` checks Node, Git, platform/WSL, the Reasonix binary and supervisor
-flags, ACP extension compatibility, OS sandbox availability, state permissions,
-network posture, the required model selector, and the effective session
-sandbox. It creates and closes an ACP diagnostic session but never sends a model
-prompt.
+It checks Node, Git, platform/WSL, the Reasonix binary and supervisor flags, OS
+sandbox availability, state permissions, and network posture.
+
+The deep lane is explicit, bounded to one Goal, 50,000 cumulative provider
+tokens, and ten minutes, and may incur provider cost:
+
+```sh
+codex-reasonix-mcp doctor --deep --allow-provider-call
+```
+
+It creates temporary source/state, proves a structured edit, static command,
+exact verification, final worker commit, and unchanged source repository,
+reports duration/usage/estimated cost, and always attempts cleanup. This lane
+is never implied by standard doctor. Failure reports preserve only bounded,
+privacy-safe partial proof and event-type diagnostics before cleanup.
 
 ## MCP surface
 
-The server is named `reasonix_worker` and exposes exactly three tools:
+The `reasonix_worker` server exposes exactly three tools:
 
-- `reasonix_delegate` validates an immutable `TaskContractV1`, creates the
-  worker branch/worktree/session, and returns while provisioning continues.
+- `reasonix_delegate` validates `TaskContractV1`, creates or resumes the
+  isolated task, and returns while provisioning continues.
 - `reasonix_control` steers, answers an interaction, cancels, finalizes, or
   closes a task. At most two post-review repair rounds are accepted.
-- `reasonix_inspect` returns bounded status, evidence, interactions, events,
-  and optional paginated diffs.
+- `reasonix_inspect` reads bounded status, evidence, interactions, events,
+  collision evidence, and optional paginated diffs.
 
-Codex calls `reasonix_delegate` only after the user explicitly requests or
-approves Reasonix implementation. Once approved, Codex does not substitute
-native subagents for that contracted work. Native Codex subagents remain the
-right fit for bounded parallel exploration, tests, triage, or summaries that
-do not require the Reasonix task lifecycle.
+Each tool advertises a concrete success schema and every successful response
+contains matching `structuredContent`. Errors remain `isError` responses with a
+redacted `code`, `message`, `retryable`, closed-enum `next_action`, and optional
+safe details. Delegate/control are annotated mutating, destructive,
+non-idempotent, and open-world; inspect is read-only, idempotent, and
+closed-world.
 
-`reasonix_delegate` and finalization require Codex's
-`codex/sandbox-state-meta`. A writable repository path is derived only from that
-metadata; no model-provided repository path is accepted.
+Codex calls `reasonix_delegate` only after explicit user request or approval for
+Reasonix implementation. Delegate and finalization derive repository authority
+from `codex/sandbox-state-meta`; no model-provided repository path is accepted.
 
-## Safe lifecycle
+## Shell-first supervision
 
-1. Codex creates a contract with explicit write and forbidden scopes.
-2. The bridge rejects a dirty source worktree, creates `reasonix/<task-id>`, and
-   places the worker worktree below its private state directory.
-3. Reasonix runs Delivery + Goal with planner disabled, scoped writes, sandboxed
-   bash, and network off by default.
-4. Codex inspects bounded evidence and may request at most two repair rounds.
-5. `finalize` reruns all verification, rechecks scope/size/secrets, stages explicit
-   files, runs commit hooks against a disposable index, and advances the worker
-   ref only when the resulting tree is byte-for-byte the reviewed tree.
-6. The branch, worktree, contract, and evidence are retained. Nothing is pushed,
-   merged, cherry-picked, or deleted automatically.
+Reasonix shell requests must carry private `_meta.reasonix.io` static argv v1
+metadata and a cwd inside the worker worktree. The bridge then applies this
+precedence:
 
-See [architecture](docs/architecture.md), [task contracts](docs/task-contract.md),
-[configuration](docs/configuration.md), [security](docs/security.md), and
-[troubleshooting](docs/troubleshooting.md).
+1. Audited reads such as safe `rg`, non-in-place `sed`, `cat`, `ls`, safe
+   `find`, and sanitized Git reads receive one-time approval.
+2. Tests, builds, formatters, package managers, project scripts, and restricted
+   `env` wrappers require an exact argv plus cwd match in contract verification
+   or `allowed_commands`.
+3. Git mutations or ref/history rewrites, `gh`, remotes, publish/release, network access,
+   credentials, privilege escalation, destructive filesystem operations,
+   shell/eval, inline interpreters, cwd escape, and metadata mismatch are always
+   denied. A contract cannot override these rules.
+4. Unknown executables are denied with a recovery hint.
+
+Every allowed command has a watchdog and immediate post-command scope,
+symlink, size, secret, and source-collision checks. Repeated identical immutable
+denials receive one recovery steer; the third denial in the same prompt cancels
+the turn and pauses the task instead of opening a permission interaction.
+
+`allowed_commands` expands execution permission only. Verification commands
+are implicitly allowed and remain the sole source of automated acceptance
+evidence. See [task contracts](docs/task-contract.md).
+
+## Collision safety and optional Codex hook
+
+The bridge compares source dirty paths and committed movement since the task's
+base against `write_scope` on resume, before and after worker mutation, at
+review readiness, and throughout finalization. Overlap pauses or blocks the task
+without reset, stash, or deletion. This core scanner is authoritative.
+
+An optional user hook provides an earlier guardrail for Codex `Bash` and
+`apply_patch` calls:
+
+```sh
+codex-reasonix-mcp hooks install --user
+codex-reasonix-mcp hooks install --user --apply
+codex-reasonix-mcp hooks status --user
+```
+
+Install/uninstall are dry runs without `--apply`. Installation atomically
+merges `~/.codex/hooks.json`, preserves third-party hooks, and installs a
+versioned runtime in private state. You must still inspect and trust it manually
+through Codex `/hooks`; the installer does not bypass trust. The hook is a
+guardrail, never the collision authority.
+
+## Task retention
+
+```sh
+codex-reasonix-mcp task list
+codex-reasonix-mcp task list --all --json
+codex-reasonix-mcp task archive <id>
+codex-reasonix-mcp task archive <id> --apply
+codex-reasonix-mcp task prune --older-than 30d
+codex-reasonix-mcp task prune --older-than 30d --apply
+```
+
+List shows active tasks by default; `--all` includes terminal live tasks,
+archives, and tombstones. Archive accepts only a terminal task whose worker
+worktree is clean or missing. It moves the full audit atomically and may detach
+a clean worktree, but never deletes the branch, ref, or commit. Prune applies
+only to archives at least the requested age and replaces them with permanent,
+integrity-bound tombstones. Mutations are dry runs unless `--apply` is present.
+
+## Local data and metrics
+
+Task state uses a validated, version-gated v2 schema. Valid v1 records migrate
+atomically on read; corrupt, noncanonical, and unknown future versions fail
+closed. Private local
+metrics record only closed numeric/outcome classes for permissions, denial
+loops, commands/timeouts, collisions, lifecycle duration, verification, and
+provider usage. They hash task identity and never store raw prompts, argv,
+command output, secrets, or file contents. There is no telemetry or upload.
 
 ## Develop
 
@@ -111,22 +189,26 @@ pnpm check
 pnpm audit --audit-level high
 ```
 
-CI runs the same gates on Node 22/24 Linux and Node 22 macOS. npm releases use
-GitHub OIDC trusted publishing with provenance and no long-lived npm token;
-prerelease versions publish under the `next` dist-tag. See
-[CONTRIBUTING.md](CONTRIBUTING.md) for the release gates.
+`pnpm check` includes lint, formatting, TypeScript, V8 coverage, build, package
+allowlist, and pack dry-run. Coverage minimums are 80% for lines, statements,
+and functions and 75% for branches. CI runs Verify on Node 22/24 Linux and Node
+22 macOS, plus dependency audit and CodeQL—the five protected checks expected by
+the release train.
 
-The offline end-to-end test uses a fake ACP Reasonix agent and performs no live
-provider calls or external mutations. A live DeepSeek smoke test is intentionally
-not automated and requires explicit credential and cost authorization.
+GitHub OIDC trusted publishing uses provenance and no long-lived npm token. The
+release workflow validates exact `v<package-version>` tags and maps prereleases
+to `next` and stable versions to `latest`. No local `npm publish` is part of the
+release process.
+
+See [architecture](docs/architecture.md), [configuration](docs/configuration.md),
+[security](docs/security.md), [troubleshooting](docs/troubleshooting.md), and
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Community
 
-- Read [CONTRIBUTING.md](CONTRIBUTING.md) before proposing a change.
 - Use the structured [bug report](https://github.com/rixzkiye/codex-reasonix-mcp/issues/new?template=bug_report.yml)
-  or [feature request](https://github.com/rixzkiye/codex-reasonix-mcp/issues/new?template=feature_request.yml)
-  forms for public work.
-- Follow the [Code of Conduct](CODE_OF_CONDUCT.md) in all project spaces.
+  or [feature request](https://github.com/rixzkiye/codex-reasonix-mcp/issues/new?template=feature_request.yml).
+- Follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 - Report vulnerabilities privately through
   [GitHub Security Advisories](https://github.com/rixzkiye/codex-reasonix-mcp/security/advisories/new),
   as described in [SECURITY.md](SECURITY.md).

@@ -1,68 +1,98 @@
 # Security model
 
-## Boundaries
+## Authority boundaries
 
-The MCP caller is not allowed to supply an arbitrary repository path. Delegate
-and finalize derive the cwd and effective network permission from
-`codex/sandbox-state-meta`, canonicalize the Git repository, and require a
-writable profile. Native Windows is rejected because Reasonix shell execution
-does not have a native OS sandbox in v1.
+The MCP caller cannot supply an arbitrary repository path. Delegate and
+finalize derive cwd/network permission from `codex/sandbox-state-meta`,
+canonicalize the Git repository, and require a writable profile. Native Windows
+is rejected; use WSL.
 
-The source worktree must be clean. The bridge never stashes user changes. Each
-task owns a separate worker branch and worktree below the private state root.
+The source worktree must be clean at task creation. The bridge never stashes,
+resets, or absorbs user changes. Each task owns a separate worker branch and
+worktree below private state.
 
-## Permission decisions
+## Structured edits and shell commands
 
-The bridge automatically permits only:
+Structured edits are allowed only when every resolved path is inside
+`write_scope`, outside `forbidden_scope`, and not a Git-control or credential
+path. Symlink escapes fail closed.
 
-- structured read-only operations;
-- structured file edits whose resolved paths are within `write_scope` and not
-  within `forbidden_scope`; and
-- exact argv operations already named by contract verification.
+Shell approval requires trusted private `_meta.reasonix.io` static argv v1
+metadata whose argv/cwd agree with the ACP subject and whose cwd resolves inside
+the worker worktree. Policy precedence is:
 
-Ambiguous raw input, credentials, new network access, out-of-scope paths, and
-destructive actions require or deny interaction. Git staging/history commands
-and `commit`, `reset`, `clean`, `checkout`, `merge`, `rebase`, `cherry-pick`,
-`push`, and `tag` are never auto-approved. Contract scope cannot be overridden
-through an interaction.
+1. Audited filesystem reads and sanitized Git reads receive `allow_once`.
+2. Test/build/format/package/project commands and restricted `env` wrappers
+   require exact argv plus normalized cwd in verification or
+   `allowed_commands`.
+3. Git mutations or ref/history rewrites, `gh`, publish/release, remote/network access,
+   credentials, privilege escalation, destructive filesystem commands,
+   shell/eval, inline-code interpreters, cwd escape, and metadata mismatch are
+   immutable one-time denials. Contracts cannot override them.
+4. Unknown executables are denied with a structured recovery hint.
 
-## Data handling
+Immutable denials never become `waiting_permission`. One recovery steer is sent
+per fingerprint; the third identical denial within one prompt cancels the turn
+and pauses the task. Every allowed command has a watchdog, and completion,
+failure, or timeout is followed by immediate repository postflight. Timeout
+cancels the session and pauses the task.
 
-State snapshots and logs are private. Journals are append-only and recursively
-redact credential-shaped keys and token patterns. Agent thought chunks are
-dropped. Inspection excludes raw diff and full terminal output by default and
-caps each response at 64 KiB with opaque pagination cursors.
+## Source-collision authority
 
-Verification and scanner subprocesses inherit only an allowlist of ordinary
-system variables. Provider keys, tokens, cookies, authorization headers, and
-credential variables are not forwarded. They run in dedicated POSIX process
-groups so timeout, cancellation, or direct-child exit cannot leave descendants
-mutating the worktree. A paused task may resume only when its stored Reasonix
-process/config fingerprint exactly matches the current effective posture.
+At resume, before/after mutation, review readiness, finalize start, after
+verification, before staging, and before commit, the bridge compares source
+dirty paths and committed movement since base with task `write_scope`. Overlap
+or unavailable source ownership records bounded evidence, releases the lease,
+and pauses/blocks instead of changing user data.
 
-## Commit gate
+The optional user Codex hook blocks overlapping `apply_patch` and
+unknown/write-capable Bash while an active task sentinel exists. A corrupt
+active sentinel/state fails closed for those tools; no active state allows. The
+hook is only an early guardrail. Core collision scans remain authoritative, and
+manual `/hooks` review/trust remains required.
 
-Before committing, the bridge recomputes changed/untracked files, resolves
-symlinks, rejects submodule drift and oversized files, scans working content,
-runs all verification, and repeats those checks before staging. `.git` control
-paths and common credential paths are never auto-approved for worker reads or
-edits. The bridge stages explicit names, checks staged names/diff/whitespace,
-and scans staged content again.
+## Data handling and metrics
 
-`pre-commit`, `prepare-commit-msg`, and `commit-msg` hooks run against a private
-copy of the reviewed index. A hook that changes the index, worktree, or worker
-ref aborts the transaction. The final commit is built from the reviewed tree and
-the worker ref is advanced only with an atomic old-OID check. The bridge then
-requires exactly one commit and a clean worktree. It never pushes or merges.
+Snapshots, journals, evidence, archives, hook runtime, and metrics are private.
+Journals recursively redact credential-shaped keys/token patterns; thought
+chunks are dropped. Inspection omits raw diff/full terminal output by default
+and caps responses at 64 KiB with signed opaque cursors.
+
+Verification/scanner subprocesses inherit a small ordinary-system allowlist,
+never provider credentials. POSIX process groups ensure timeout, cancellation,
+or child exit cannot leave descendants mutating the worktree.
+
+Metrics store only closed decisions/outcomes, counts, durations, task hashes,
+and numeric provider usage. They never store prompts, argv, outputs, secrets, or
+file contents and are never transmitted.
+
+## State, archive, and commit integrity
+
+Persisted task records are version-gated and validate canonical identity and
+contract fields. Valid v1 records migrate atomically to v2; corrupt and unknown
+future versions fail closed. Archive
+accepts only terminal records whose worker worktree is clean or missing and
+whose repository identity/ref/head still match. It preserves branch/ref/commit.
+Prune replaces eligible archives with integrity-bound tombstones and recovers
+interrupted staging idempotently.
+
+Before commit, the bridge repeats source collision, scope, symlink, submodule,
+size, and secret checks around exact contract verification. Only verification
+can approve automated acceptance criteria. Explicit staging must match the
+reviewed diff.
+
+`pre-commit`, `prepare-commit-msg`, and `commit-msg` run against a disposable
+reviewed index. Hook mutation aborts. The final commit uses the reviewed tree,
+and the worker ref advances only through an atomic old-OID check. The bridge
+never pushes or merges.
 
 ## Known limits
 
-- Reasonix and provider supply-chain trust remain the user's responsibility.
-- An external secret scanner is strongly recommended for sensitive projects.
-- State retention is intentional; disk encryption and host access control are
-  outside the bridge.
-- Filesystem checks cannot make an unrelated privileged process trustworthy.
-  Repository leases and repeated Git checks detect ordinary concurrent writers,
-  but host compromise is out of scope.
+- Reasonix/provider supply-chain trust and billing remain user responsibilities.
+- An external secret scanner is recommended for sensitive repositories.
+- Disk encryption, host access control, and privileged-process trust are out of
+  scope.
+- The user Codex hook cannot replace core authority and does not bypass Codex
+  hook trust.
 
 Report vulnerabilities privately as described in [SECURITY.md](../SECURITY.md).

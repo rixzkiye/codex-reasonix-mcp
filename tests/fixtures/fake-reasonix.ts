@@ -15,6 +15,8 @@ interface FakeSession {
   sequence: number;
   cancelled: boolean;
   failed: boolean;
+  promptTokens?: number;
+  diagnosticLeak?: boolean;
   verification?: { argv: [string, ...string[]]; cwd: string };
 }
 
@@ -78,15 +80,15 @@ function status(sessionId: string) {
   const hit = session.complete ? 7 : 0;
   const miss = session.complete ? 3 : 0;
   const usage = {
-    promptTokens: session.complete ? 10 : 0,
+    promptTokens: session.promptTokens ?? (session.complete ? 10 : 0),
     completionTokens: session.complete ? 5 : 0,
     reasoningTokens: session.complete ? 2 : 0,
     cacheHitTokens: hit,
     cacheMissTokens: miss,
     cacheHitRatio: hit + miss > 0 ? hit / (hit + miss) : null,
-    estimatedCost: session.complete ? 0.001 : null,
-    currency: session.complete ? 'USD' : null,
-    usageSource: 'executor',
+    estimatedCost: session.diagnosticLeak ? 0.0045 : session.complete ? 0.001 : null,
+    currency: session.diagnosticLeak ? '$' : session.complete ? 'USD' : null,
+    usageSource: session.diagnosticLeak ? 'PASSWORD=hunter2 /private/usage.txt' : 'executor',
   };
   return {
     schemaVersion: 1 as const,
@@ -110,7 +112,13 @@ function status(sessionId: string) {
               : ('none' as const),
       objective: 'fake offline goal',
     },
-    phase: session.running ? 'implementing' : session.complete ? 'review_ready' : 'idle',
+    phase: session.diagnosticLeak
+      ? 'PASSWORD=hunter2 /private/phase.txt'
+      : session.running
+        ? 'implementing'
+        : session.complete
+          ? 'review_ready'
+          : 'idle',
     turnOutcome: {
       kind: session.cancelled
         ? ('cancelled' as const)
@@ -119,10 +127,17 @@ function status(sessionId: string) {
           : session.complete
             ? ('completed' as const)
             : ('none' as const),
+      ...(session.diagnosticLeak
+        ? { reason: 'PASSWORD=hunter2 /private/reason.txt result.txt offline result' }
+        : {}),
     },
     finalReadiness: {
       readyForReview: session.complete,
-      summary: session.complete ? 'Created result.txt using the fake offline Reasonix agent.' : '',
+      summary: session.diagnosticLeak
+        ? 'PASSWORD=hunter2 /private/summary.txt result.txt offline result'
+        : session.complete
+          ? 'Created result.txt using the fake offline Reasonix agent.'
+          : '',
       risks: [],
     },
     sandbox: {
@@ -275,6 +290,12 @@ const app = acp
       return { stopReason: 'cancelled' };
     }
     await writeFile(`${session.cwd}/result.txt`, 'offline result\n', 'utf8');
+    if (fakeMode === 'fail-after-edit') {
+      session.running = false;
+      session.failed = true;
+      session.sequence += 1;
+      return { stopReason: 'end_turn' };
+    }
     if (!session.verification) throw new Error('fake agent did not receive contract verification');
     const executePermission = await client.request(acp.methods.client.session.requestPermission, {
       sessionId: params.sessionId,
@@ -316,6 +337,19 @@ const app = acp
         status: 'completed',
       },
     });
+    if (fakeMode === 'usage-limit') {
+      session.promptTokens = 60_000;
+      session.diagnosticLeak = true;
+      session.sequence += 1;
+      await client.notify('_reasonix.io/session/status_update', {
+        schemaVersion: 1,
+        sequence: session.sequence,
+        sessionId: params.sessionId,
+        event: 'pause',
+        status: status(params.sessionId),
+      });
+      await new Promise<void>(() => undefined);
+    }
     if (fakeMode === 'fail') {
       session.running = false;
       session.failed = true;

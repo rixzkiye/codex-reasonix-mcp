@@ -1,11 +1,17 @@
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
 import { loadConfig } from '../../src/config.js';
-import { missingSupervisorFlags, runDeepDoctor, runDoctor } from '../../src/doctor.js';
+import {
+  DEEP_DOCTOR_EVENT_TYPE_TAIL_LIMIT,
+  DEFAULT_DEEP_DOCTOR_PROVIDER_TOKEN_LIMIT,
+  missingSupervisorFlags,
+  runDeepDoctor,
+  runDoctor,
+} from '../../src/doctor.js';
 
 describe('missingSupervisorFlags', () => {
   it('accepts the single-dash format emitted by Go flag help', () => {
@@ -64,35 +70,142 @@ describe('deep doctor offline conformance', () => {
         sourceUnchanged: true,
       },
       cleanup: { attempted: true, ok: true },
+      diagnostics: {
+        termination: 'completed',
+        providerTokenLimit: DEFAULT_DEEP_DOCTOR_PROVIDER_TOKEN_LIMIT,
+        lastTaskStatus: 'completed',
+      },
     });
     expect(report.usage?.promptTokens).toBeGreaterThan(0);
     expect(report.estimatedCost).toBe(0.001);
   });
 
-  it('always cleans temporary resources after a one-run fake provider failure', async () => {
+  it('retains edit and command evidence and cleans temporary resources after provider failure', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'reasonix-failed-deep-doctor-'));
     const report = await runDeepDoctor(
       loadConfig({ reasonixCommand: tsx, reasonixArgs: [fake, '--fake-mode=fail'] }),
+      { allowProviderCall: true, deepTimeoutMs: 20_000 },
+      { createTempRoot: () => Promise.resolve(root) },
+    );
+    expect(report).toMatchObject({
+      ok: false,
+      status: 'failed',
+      providerRuns: 1,
+      proofs: {
+        structuredEdit: true,
+        staticCommand: true,
+        exactVerification: false,
+        finalCommit: false,
+        sourceUnchanged: true,
+      },
+      cleanup: { attempted: true, ok: true },
+      diagnostics: {
+        termination: 'failure',
+        lastTaskStatus: 'failed',
+        lastTaskPhase: 'reasonix_error',
+      },
+    });
+    await expect(stat(root)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(report.diagnostics.eventCount).toBeGreaterThan(0);
+    expect(report.diagnostics.eventTypeTail).toContain('prompt_finished');
+  });
+
+  it('retains accurate edit-only evidence when the provider fails before its static command', async () => {
+    const report = await runDeepDoctor(
+      loadConfig({
+        reasonixCommand: tsx,
+        reasonixArgs: [fake, '--fake-mode=fail-after-edit'],
+      }),
       { allowProviderCall: true, deepTimeoutMs: 20_000 },
     );
     expect(report).toMatchObject({
       ok: false,
       status: 'failed',
       providerRuns: 1,
+      proofs: {
+        structuredEdit: true,
+        staticCommand: false,
+        exactVerification: false,
+        finalCommit: false,
+        sourceUnchanged: true,
+      },
       cleanup: { attempted: true, ok: true },
     });
   });
 
   it('bounds one fake provider run and cleans up on timeout', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'reasonix-timeout-deep-doctor-'));
     const report = await runDeepDoctor(
       loadConfig({ reasonixCommand: tsx, reasonixArgs: [fake, '--fake-mode=timeout'] }),
       { allowProviderCall: true, deepTimeoutMs: 2_000 },
+      { createTempRoot: () => Promise.resolve(root) },
     );
     expect(report).toMatchObject({
       ok: false,
       status: 'timed_out',
       providerRuns: 1,
+      proofs: { sourceUnchanged: true },
       cleanup: { attempted: true, ok: true },
+      diagnostics: {
+        termination: 'timeout',
+        lastTaskStatus: 'running',
+        lastTaskPhase: 'implementing',
+      },
     });
+    await expect(stat(root)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('cancels a single runaway provider Goal and reports only bounded privacy-safe diagnostics', async () => {
+    const report = await runDeepDoctor(
+      loadConfig({
+        reasonixCommand: tsx,
+        reasonixArgs: [fake, '--fake-mode=usage-limit'],
+      }),
+      {
+        allowProviderCall: true,
+        deepTimeoutMs: 20_000,
+      },
+    );
+    expect(report).toMatchObject({
+      ok: false,
+      status: 'usage_limited',
+      providerRuns: 1,
+      usage: { promptTokens: 60_000, usageSource: 'redacted' },
+      estimatedCost: 0.0045,
+      currency: '$',
+      proofs: {
+        structuredEdit: true,
+        staticCommand: true,
+        exactVerification: false,
+        finalCommit: false,
+        sourceUnchanged: true,
+      },
+      cleanup: { attempted: true, ok: true },
+      diagnostics: {
+        termination: 'provider_usage_limit',
+        providerTokenLimit: DEFAULT_DEEP_DOCTOR_PROVIDER_TOKEN_LIMIT,
+        observedProviderTokens: 60_000,
+        lastTaskStatus: 'paused',
+        lastTaskPhase: 'other',
+        lastTaskReason: 'redacted',
+      },
+    });
+    expect(report.detail).toContain('Provider usage limit reached');
+    expect(report.diagnostics.eventTypeTail).toContain('task_cancel_requested');
+    expect(report.diagnostics.eventTypeTail.length).toBeLessThanOrEqual(
+      DEEP_DOCTOR_EVENT_TYPE_TAIL_LIMIT,
+    );
+    const serialized = JSON.stringify(report);
+    for (const raw of [
+      'hunter2',
+      '/private/',
+      'offline result',
+      'model-supplied shell text',
+      'result.txt',
+      '"argv"',
+    ]) {
+      expect(serialized).not.toContain(raw);
+    }
   });
 
   it('makes zero calls unless provider authority is explicit', async () => {
@@ -100,6 +213,10 @@ describe('deep doctor offline conformance', () => {
       status: 'skipped',
       providerRuns: 0,
       cleanup: { attempted: false, ok: true },
+      diagnostics: {
+        termination: 'skipped',
+        providerTokenLimit: DEFAULT_DEEP_DOCTOR_PROVIDER_TOKEN_LIMIT,
+      },
     });
   });
 });

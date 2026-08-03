@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { isCliEntrypoint } from '../../src/cli-entrypoint.js';
 import { runContractLintCli } from '../../src/contract-lint.js';
 import { main } from '../../src/index.js';
+import { VERSION } from '../../src/version.js';
 import { contractFixture } from '../helpers.js';
 
 const originalStateDir = process.env.CODEX_REASONIX_STATE_DIR;
@@ -122,7 +123,7 @@ describe('package CLI dispatch', () => {
   it.each(['version', '--version', '-v'])('prints the version for %s', async (command) => {
     const output = captureProcessOutput();
     await main(['node', 'codex-reasonix-mcp', command]);
-    expect(output.stdout.join('')).toMatch(/^0\.1\.1/);
+    expect(output.stdout.join('')).toBe(`${VERSION}\n`);
     expect(output.stderr).toEqual([]);
   });
 
