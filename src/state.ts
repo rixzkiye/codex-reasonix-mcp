@@ -121,7 +121,7 @@ function requireStringArray(value: unknown, field: string): string[] {
   if (!Array.isArray(value) || !value.every((item) => typeof item === 'string')) {
     invalidState(`${field} must be an array of strings`);
   }
-  return value as string[];
+  return value;
 }
 
 function requireTaskId(value: unknown): string {
@@ -180,7 +180,11 @@ function parseInteractionRecord(value: unknown): InteractionRecord {
   if (record.kind !== 'permission' && record.kind !== 'input') {
     invalidState('interactions entry kind must be permission or input');
   }
-  if (record.status !== 'pending' && record.status !== 'resolved' && record.status !== 'cancelled') {
+  if (
+    record.status !== 'pending' &&
+    record.status !== 'resolved' &&
+    record.status !== 'cancelled'
+  ) {
     invalidState('interactions entry status must be pending, resolved, or cancelled');
   }
   const createdAt = requireTimestamp(record.createdAt, 'interactions entry createdAt');
@@ -189,8 +193,8 @@ function parseInteractionRecord(value: unknown): InteractionRecord {
   const response = requireOptionalRecord(record.response, 'interactions entry response');
   const parsed: InteractionRecord = {
     id: requireNonEmptyString(record.id, 'interactions entry id'),
-    kind: record.kind as InteractionRecord['kind'],
-    status: record.status as InteractionRecord['status'],
+    kind: record.kind,
+    status: record.status,
     createdAt,
     request,
   };
@@ -210,7 +214,9 @@ function parseVerificationEvidence(value: unknown): VerificationEvidence {
     startedAt: requireTimestamp(record.startedAt, 'verification entry startedAt'),
     finishedAt: requireTimestamp(record.finishedAt, 'verification entry finishedAt'),
     exitCode:
-      record.exitCode === null ? null : requireInteger(record.exitCode, 'verification entry exitCode'),
+      record.exitCode === null
+        ? null
+        : requireInteger(record.exitCode, 'verification entry exitCode'),
     timedOut: requireBoolean(record.timedOut, 'verification entry timedOut'),
     passed: requireBoolean(record.passed, 'verification entry passed'),
     proves: requireStringArray(record.proves, 'verification entry proves'),
@@ -228,7 +234,7 @@ function parseAcceptanceEvidence(value: unknown): AcceptanceEvidence {
   const sha256 = requireOptionalSha256(record.sha256, 'acceptance evidence entry sha256');
   const parsed: AcceptanceEvidence = {
     criterionId: requireNonEmptyString(record.criterionId, 'acceptance evidence entry criterionId'),
-    evidence: record.evidence as AcceptanceEvidence['evidence'],
+    evidence: record.evidence,
     approved: requireBoolean(record.approved, 'acceptance evidence entry approved'),
     source: requireString(record.source, 'acceptance evidence entry source'),
   };
@@ -406,7 +412,7 @@ export class StateStore {
 
   async createTask(record: TaskRecord): Promise<void> {
     if (record.schemaVersion !== TASK_RECORD_SCHEMA_VERSION) {
-      invalidState(`Task records must use schemaVersion ${TASK_RECORD_SCHEMA_VERSION}`);
+      invalidState(`Task records must use schemaVersion ${String(TASK_RECORD_SCHEMA_VERSION)}`);
     }
     parseTaskRecordFields(record as unknown as Record<string, unknown>);
     if (await this.exists(record.taskId)) {
@@ -424,9 +430,7 @@ export class StateStore {
     });
   }
 
-  private async readTask(
-    taskId: string,
-  ): Promise<{
+  private async readTask(taskId: string): Promise<{
     raw: string;
     state: Record<string, unknown>;
     record: TaskRecord;
@@ -477,13 +481,16 @@ export class StateStore {
       }
       return latest.record;
     });
-    this.updates.set(taskId, current.catch(() => undefined));
+    this.updates.set(
+      taskId,
+      current.catch(() => undefined),
+    );
     return await current;
   }
 
   async saveTask(record: TaskRecord): Promise<void> {
     if (record.schemaVersion !== TASK_RECORD_SCHEMA_VERSION) {
-      invalidState(`Task records must use schemaVersion ${TASK_RECORD_SCHEMA_VERSION}`);
+      invalidState(`Task records must use schemaVersion ${String(TASK_RECORD_SCHEMA_VERSION)}`);
     }
     parseTaskRecordFields(record as unknown as Record<string, unknown>);
     record.updatedAt = new Date().toISOString();

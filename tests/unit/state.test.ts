@@ -279,7 +279,10 @@ describe('private persistent state', () => {
         mutate: (state) => void delete (state.repository as Record<string, unknown>).root,
       },
       { name: 'empty baseCommit', mutate: (state) => void (state.baseCommit = '') },
-      { name: 'non-boolean networkEnabled', mutate: (state) => void (state.networkEnabled = 'yes') },
+      {
+        name: 'non-boolean networkEnabled',
+        mutate: (state) => void (state.networkEnabled = 'yes'),
+      },
       { name: 'empty phase', mutate: (state) => void (state.phase = '') },
       { name: 'malformed timestamp', mutate: (state) => void (state.createdAt = 'yesterday') },
       {
@@ -290,7 +293,9 @@ describe('private persistent state', () => {
       {
         name: 'uppercase evidence digest',
         mutate: (state) =>
-          void ((state.verification as Array<Record<string, unknown>>)[0]!.sha256 = 'AB'.repeat(32)),
+          void ((state.verification as Array<Record<string, unknown>>)[0]!.sha256 = 'AB'.repeat(
+            32,
+          )),
       },
       {
         name: 'short evidence digest',
@@ -328,7 +333,8 @@ describe('private persistent state', () => {
       {
         name: 'invalid acceptance evidence kind',
         mutate: (state) =>
-          void ((state.acceptanceEvidence as Array<Record<string, unknown>>)[0]!.evidence = 'bogus'),
+          void ((state.acceptanceEvidence as Array<Record<string, unknown>>)[0]!.evidence =
+            'bogus'),
       },
       {
         name: 'non-string changedFiles entry',
@@ -342,7 +348,7 @@ describe('private persistent state', () => {
     ];
 
     for (const variant of variants) {
-      const state = structuredClone(base) as Record<string, unknown>;
+      const state = structuredClone(base);
       variant.mutate?.(state);
       if (variant.version !== undefined) state.schemaVersion = variant.version;
       const raw = variant.raw ?? `${JSON.stringify(state, null, 2)}\n`;
@@ -354,7 +360,7 @@ describe('private persistent state', () => {
 
     // Unknown extra fields on an otherwise valid v2 record are tolerated; the
     // version gate is the future-proofing boundary.
-    const extra = structuredClone(base) as Record<string, unknown>;
+    const extra = structuredClone(base);
     extra.futureField = 'x';
     await writeFile(store.statePath(task.taskId), `${JSON.stringify(extra, null, 2)}\n`, 'utf8');
     expect((await store.loadTask(task.taskId)).schemaVersion).toBe(2);
@@ -362,7 +368,10 @@ describe('private persistent state', () => {
 
   it('refuses to create or save malformed records without rewriting state', async () => {
     const store = await newStore();
-    const broken = structuredClone(sampleTask('invalid-create')) as unknown as Record<string, unknown>;
+    const broken = structuredClone(sampleTask('invalid-create')) as unknown as Record<
+      string,
+      unknown
+    >;
     delete (broken.usage as Record<string, unknown>).usageSource;
     await expect(store.createTask(broken as unknown as TaskRecord)).rejects.toMatchObject({
       code: 'invalid_state',
@@ -450,13 +459,15 @@ describe('private persistent state', () => {
     expect(record.status).toBe('paused');
     expect(record.phase).toBe('restart_recovery');
     expect(record.eventSequence).toBeGreaterThanOrEqual(1);
-    expect(
-      (await store.readEvents(task.taskId)).map((event) => event.type),
-    ).toContain('restart_recovery');
+    expect((await store.readEvents(task.taskId)).map((event) => event.type)).toContain(
+      'restart_recovery',
+    );
 
     // A second recovery pass is a no-op: same result, no extra events.
     expect(await store.recoverInterruptedTasks()).toEqual([]);
-    expect((await store.readEvents(task.taskId)).filter((event) => event.type === 'restart_recovery')).toHaveLength(1);
+    expect(
+      (await store.readEvents(task.taskId)).filter((event) => event.type === 'restart_recovery'),
+    ).toHaveLength(1);
   });
 
   it('runtime-created records always use the current schemaVersion 2', async () => {
