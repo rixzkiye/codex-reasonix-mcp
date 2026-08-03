@@ -180,6 +180,82 @@ function parsePorcelainPaths(value: string): string[] {
   return paths;
 }
 
+function parsePorcelainAllPaths(value: string): string[] {
+  const fields = nulList(value);
+  const paths: string[] = [];
+  for (let index = 0; index < fields.length; index += 1) {
+    const field = fields[index];
+    if (!field || field.length < 4) continue;
+    const statusCode = field.slice(0, 2);
+    paths.push(field.slice(3));
+    if (statusCode.includes('R') || statusCode.includes('C')) {
+      const original = fields[index + 1];
+      if (original) paths.push(original);
+      index += 1;
+    }
+  }
+  return paths;
+}
+
+function parseNameStatusPaths(value: string): string[] {
+  const fields = nulList(value);
+  const paths: string[] = [];
+  for (let index = 0; index < fields.length; ) {
+    const statusCode = fields[index++];
+    if (!statusCode) continue;
+    const first = fields[index++];
+    if (first) paths.push(first);
+    if (statusCode.startsWith('R') || statusCode.startsWith('C')) {
+      const second = fields[index++];
+      if (second) paths.push(second);
+    }
+  }
+  return paths;
+}
+
+export interface SourceRepositoryChanges {
+  sourceHead: string;
+  dirtyPaths: string[];
+  committedPaths: string[];
+}
+
+/**
+ * Reads source-repository path movement without changing the index, worktree,
+ * refs, or user files. Rename/copy deltas include both the old and new path.
+ */
+export async function sourceRepositoryChanges(
+  repository: RepositoryIdentity,
+  baseCommit: string,
+): Promise<SourceRepositoryChanges> {
+  const readGit = async (args: string[]): Promise<CommandResult> =>
+    await gitChecked(repository.root, args, 60_000, { GIT_OPTIONAL_LOCKS: '0' });
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const head = (await readGit(['rev-parse', '--verify', 'HEAD'])).stdout.trim();
+    const [dirty, committed] = await Promise.all([
+      readGit(['status', '--porcelain=v1', '-z', '--untracked-files=all']),
+      readGit([
+        'diff',
+        '--name-status',
+        '-z',
+        '--find-renames',
+        '--find-copies',
+        `${baseCommit}..${head}`,
+      ]),
+    ]);
+    const headAfter = (await readGit(['rev-parse', '--verify', 'HEAD'])).stdout.trim();
+    if (headAfter !== head) continue;
+    return {
+      sourceHead: head,
+      dirtyPaths: [...new Set(parsePorcelainAllPaths(dirty.stdout))].sort(),
+      committedPaths: [...new Set(parseNameStatusPaths(committed.stdout))].sort(),
+    };
+  }
+  throw new BridgeError(
+    'ownership_ambiguous',
+    'Source HEAD moved repeatedly during collision scan',
+  );
+}
+
 export async function changedFiles(worktree: string): Promise<string[]> {
   const [tracked, untracked] = await Promise.all([
     gitChecked(worktree, ['diff', '--no-renames', '--name-only', '-z', 'HEAD']),

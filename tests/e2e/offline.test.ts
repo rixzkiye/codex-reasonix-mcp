@@ -1,8 +1,8 @@
-import { access, mkdtemp, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { runCommand } from '../../src/command.js';
 import { loadConfig, type BridgeConfig } from '../../src/config.js';
@@ -12,6 +12,7 @@ import { contractFixture, createGitRepository, sandboxMeta, waitUntil } from '..
 const runtimes: BridgeRuntime[] = [];
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(runtimes.splice(0).map(async (runtime) => await runtime.shutdown()));
 });
 
@@ -153,6 +154,168 @@ describe('offline Codex -> Reasonix -> Codex flow', () => {
     const head = await runCommand({ argv: ['git', 'rev-parse', 'HEAD'], cwd: failed.worktree });
     expect(head.stdout.trim()).toBe(failed.baseCommit);
   });
+
+  it('blocks finalize when a late source change overlaps write_scope', async () => {
+    const repository = await createGitRepository();
+    const runtime = await runtimeFixture();
+    await runtime.delegate(
+      { task_id: 'source-collision-finalize', contract: contractFixture() },
+      sandboxMeta(repository),
+    );
+    await waitUntil(
+      async () => await runtime.store.loadTask('source-collision-finalize'),
+      (task) => task.status === 'review_required',
+    );
+    await writeFile(path.join(repository, 'result.txt'), 'user-owned source change\n', 'utf8');
+    const before = await readFile(path.join(repository, 'result.txt'));
+
+    await expect(
+      runtime.control(
+        {
+          task_id: 'source-collision-finalize',
+          action: 'finalize',
+          review_summary: 'Scoped diff reviewed.',
+          approved_review_criteria: [],
+        },
+        sandboxMeta(repository),
+      ),
+    ).rejects.toMatchObject({ code: 'ownership_ambiguous' });
+
+    expect(await readFile(path.join(repository, 'result.txt'))).toEqual(before);
+    expect(await runtime.store.loadTask('source-collision-finalize')).toMatchObject({
+      status: 'paused',
+      phase: 'source_collision',
+      sourceCollision: {
+        checkpoint: 'finalize_start',
+        overlappingPaths: ['result.txt'],
+      },
+    });
+  });
+
+  it('stops finalization when source moves during verification', async () => {
+    const repository = await createGitRepository();
+    await commitFixtureScript(
+      repository,
+      'slow-verification.cjs',
+      'setTimeout(() => process.exit(0), 700)\n',
+    );
+    const runtime = await runtimeFixture();
+    const contract = contractFixture({
+      verification: [
+        {
+          id: 'verify_result',
+          argv: [process.execPath, 'slow-verification.cjs'],
+          cwd: '.',
+          timeout_seconds: 30,
+          proves: ['ac_result'],
+        },
+      ],
+    });
+    await runtime.delegate(
+      { task_id: 'source-moved-verification', contract },
+      sandboxMeta(repository),
+    );
+    await waitUntil(
+      async () => await runtime.store.loadTask('source-moved-verification'),
+      (task) => task.status === 'review_required',
+    );
+    await runtime.control(
+      {
+        task_id: 'source-moved-verification',
+        action: 'finalize',
+        review_summary: 'Scoped diff reviewed.',
+        approved_review_criteria: [],
+      },
+      sandboxMeta(repository),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await writeFile(path.join(repository, 'result.txt'), 'source moved mid-verification\n', 'utf8');
+
+    const blocked = await waitUntil(
+      async () => await runtime.store.loadTask('source-moved-verification'),
+      (task) => task.status === 'paused',
+      20_000,
+    );
+    expect(blocked.commitHash).toBeUndefined();
+    expect(blocked.sourceCollision).toMatchObject({
+      checkpoint: 'after_verification',
+      overlappingPaths: ['result.txt'],
+    });
+    expect(await readFile(path.join(repository, 'result.txt'), 'utf8')).toBe(
+      'source moved mid-verification\n',
+    );
+  });
+
+  it.each(['before_commit', 'immediately_before_commit'] as const)(
+    'pauses recoverably on a collision at %s',
+    async (checkpoint) => {
+      const repository = await createGitRepository();
+      const runtime = await runtimeFixture();
+      const taskId = `late-${checkpoint.replaceAll('_', '-')}`;
+      await runtime.delegate(
+        { task_id: taskId, contract: contractFixture() },
+        sandboxMeta(repository),
+      );
+      await waitUntil(
+        async () => await runtime.store.loadTask(taskId),
+        (task) => task.status === 'review_required',
+      );
+
+      const collision = (
+        runtime as unknown as {
+          collision: { guardTask(taskId: string, checkpoint: string): Promise<void> };
+        }
+      ).collision;
+      const originalGuard = collision.guardTask.bind(collision);
+      const sourceContents = `user source change at ${checkpoint}\n`;
+      let injected = false;
+      vi.spyOn(collision, 'guardTask').mockImplementation(
+        async (guardedTaskId, currentCheckpoint) => {
+          if (!injected && currentCheckpoint === checkpoint) {
+            injected = true;
+            await writeFile(path.join(repository, 'result.txt'), sourceContents, 'utf8');
+          }
+          await originalGuard(guardedTaskId, currentCheckpoint);
+        },
+      );
+
+      await runtime.control(
+        {
+          task_id: taskId,
+          action: 'finalize',
+          review_summary: 'Scoped diff reviewed.',
+          approved_review_criteria: [],
+        },
+        sandboxMeta(repository),
+      );
+      await waitUntil(
+        async () => await runtime.store.loadTask(taskId),
+        (task) => task.status === 'paused',
+        20_000,
+      );
+      const finalization = (
+        runtime as unknown as {
+          finalization: { current(taskId: string): Promise<void> | undefined };
+        }
+      ).finalization.current(taskId);
+      if (finalization) await finalization;
+      const settled = await runtime.store.loadTask(taskId);
+
+      expect(injected).toBe(true);
+      expect(settled).toMatchObject({
+        status: 'paused',
+        phase: 'source_collision',
+        sourceCollision: { checkpoint, overlappingPaths: ['result.txt'] },
+      });
+      expect(settled.commitHash).toBeUndefined();
+      expect(await readFile(path.join(repository, 'result.txt'), 'utf8')).toBe(sourceContents);
+      const workerHead = await runCommand({
+        argv: ['git', 'rev-parse', 'HEAD'],
+        cwd: settled.worktree,
+      });
+      expect(workerHead.stdout.trim()).toBe(settled.baseCommit);
+    },
+  );
 
   it('bounds inspect output and paginates explicitly requested diffs', async () => {
     const repository = await createGitRepository();

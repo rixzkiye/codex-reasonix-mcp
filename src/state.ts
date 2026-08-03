@@ -1,10 +1,24 @@
 import { randomUUID } from 'node:crypto';
-import { chmod, mkdir, open, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  mkdir,
+  open,
+  readFile,
+  readdir,
+  rename,
+  stat,
+  unlink,
+  writeFile,
+} from 'node:fs/promises';
 import path from 'node:path';
 
 import { canonicalContractJson, contractHash, parseTaskContract } from './contracts.js';
 import type { TaskContractV1 } from './contracts.js';
 import { BridgeError } from './errors.js';
+import {
+  ACTIVE_HOOK_SENTINEL_SCHEMA_VERSION,
+  activeHookSentinelPath as hookSentinelPath,
+} from './hooks.js';
 import { redact } from './redaction.js';
 import {
   TASK_RECORD_SCHEMA_VERSION,
@@ -15,6 +29,7 @@ import {
   type InteractionRecord,
   type JournalEvent,
   type RepositoryIdentity,
+  type SourceCollisionEvidence,
   type TaskRecord,
   type TaskStatus,
   type UsageTotals,
@@ -257,6 +272,25 @@ function parseUsageTotals(value: unknown): UsageTotals {
   };
 }
 
+function parseSourceCollisionEvidence(value: unknown): SourceCollisionEvidence {
+  const record = requireRecord(value, 'sourceCollision');
+  return {
+    checkpoint: requireNonEmptyString(record.checkpoint, 'sourceCollision.checkpoint'),
+    baseCommit: requireNonEmptyString(record.baseCommit, 'sourceCollision.baseCommit'),
+    ...(record.sourceHead === undefined
+      ? {}
+      : { sourceHead: requireNonEmptyString(record.sourceHead, 'sourceCollision.sourceHead') }),
+    dirtyPaths: requireStringArray(record.dirtyPaths, 'sourceCollision.dirtyPaths'),
+    committedPaths: requireStringArray(record.committedPaths, 'sourceCollision.committedPaths'),
+    overlappingPaths: requireStringArray(
+      record.overlappingPaths,
+      'sourceCollision.overlappingPaths',
+    ),
+    unavailable: requireBoolean(record.unavailable, 'sourceCollision.unavailable'),
+    detectedAt: requireTimestamp(record.detectedAt, 'sourceCollision.detectedAt'),
+  };
+}
+
 /**
  * Validates every persisted TaskRecord field against the current schema.
  * v1 and v2 share the same field set, so a single validator gates both; the
@@ -318,12 +352,17 @@ function parseTaskRecordFields(state: Record<string, unknown>): TaskRecord {
   const finalMessage = requireOptionalString(state.finalMessage, 'finalMessage');
   const reviewSummary = requireOptionalString(state.reviewSummary, 'reviewSummary');
   const commitHash = requireOptionalString(state.commitHash, 'commitHash');
+  const sourceCollision =
+    state.sourceCollision === undefined
+      ? undefined
+      : parseSourceCollisionEvidence(state.sourceCollision);
   if (reason !== undefined) record.reason = reason;
   if (acpSessionId !== undefined) record.acpSessionId = acpSessionId;
   if (processFingerprint !== undefined) record.processFingerprint = processFingerprint;
   if (finalMessage !== undefined) record.finalMessage = finalMessage;
   if (reviewSummary !== undefined) record.reviewSummary = reviewSummary;
   if (commitHash !== undefined) record.commitHash = commitHash;
+  if (sourceCollision !== undefined) record.sourceCollision = sourceCollision;
   return record;
 }
 
@@ -401,6 +440,34 @@ export class StateStore {
     return path.join(this.taskDir(taskId), 'verification');
   }
 
+  activeHookSentinelPath(repositoryId: string, taskId: string): string {
+    return hookSentinelPath(this.root, repositoryId, taskId);
+  }
+
+  private async syncActiveHookSentinel(record: TaskRecord): Promise<void> {
+    const sentinelPath = this.activeHookSentinelPath(record.repository.id, record.taskId);
+    if (!TERMINAL_STATUSES.has(record.status)) {
+      await atomicWrite(
+        sentinelPath,
+        `${JSON.stringify(
+          {
+            schemaVersion: ACTIVE_HOOK_SENTINEL_SCHEMA_VERSION,
+            taskId: record.taskId,
+            repositoryId: record.repository.id,
+          },
+          null,
+          2,
+        )}\n`,
+      );
+      return;
+    }
+    try {
+      await unlink(sentinelPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  }
+
   async exists(taskId: string): Promise<boolean> {
     try {
       await stat(this.statePath(taskId));
@@ -422,6 +489,7 @@ export class StateStore {
     await privateDirectory(this.verificationDir(record.taskId));
     await atomicWrite(this.contractPath(record.taskId), canonicalContractJson(record.contract));
     await atomicWrite(this.statePath(record.taskId), `${JSON.stringify(record, null, 2)}\n`);
+    await this.syncActiveHookSentinel(record);
     await writeFile(this.journalPath(record.taskId), '', { mode: 0o600, flag: 'wx' });
     await this.appendEvent(record.taskId, 'task_created', {
       status: record.status,
@@ -495,6 +563,7 @@ export class StateStore {
     parseTaskRecordFields(record as unknown as Record<string, unknown>);
     record.updatedAt = new Date().toISOString();
     await atomicWrite(this.statePath(record.taskId), `${JSON.stringify(record, null, 2)}\n`);
+    await this.syncActiveHookSentinel(record);
   }
 
   async updateTask(
@@ -576,6 +645,7 @@ export class StateStore {
     for (const entry of await readdir(this.tasksDir(), { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
       const record = await this.loadTask(entry.name);
+      await this.syncActiveHookSentinel(record);
       if (
         !TERMINAL_STATUSES.has(record.status) &&
         record.status !== 'review_required' &&

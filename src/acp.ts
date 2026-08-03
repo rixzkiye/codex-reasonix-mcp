@@ -118,6 +118,7 @@ export class ReasonixProcess {
   private readonly initializeResponse: InitializeResponse;
   private closed = false;
   private failureReported = false;
+  private readonly callbackTasks = new Set<Promise<void>>();
 
   private constructor(
     private readonly config: BridgeConfig,
@@ -242,7 +243,11 @@ export class ReasonixProcess {
   private reportProcessFailure(error: unknown): void {
     if (this.closed || this.failureReported) return;
     this.failureReported = true;
-    void this.callbacks.onProcessError([...this.sessions.keys()], error);
+    const task = Promise.resolve(this.callbacks.onProcessError([...this.sessions.keys()], error))
+      .catch(() => undefined)
+      .then(() => undefined);
+    this.callbackTasks.add(task);
+    void task.finally(() => this.callbackTasks.delete(task));
   }
 
   private async setSelect(
@@ -463,6 +468,7 @@ export class ReasonixProcess {
     ]);
     if (this.child.exitCode === null && this.child.signalCode === null) this.child.kill('SIGKILL');
     await Promise.allSettled(this.promptTasks);
+    await Promise.allSettled(this.callbackTasks);
   }
 
   get agentInfo(): InitializeResponse['agentInfo'] {

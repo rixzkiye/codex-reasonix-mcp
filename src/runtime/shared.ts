@@ -26,6 +26,7 @@ export function taskView(task: TaskRecord): Record<string, unknown> {
     updated_at: task.updatedAt,
     reason: task.reason,
     commit_hash: task.commitHash,
+    source_collision: task.sourceCollision,
   };
 }
 

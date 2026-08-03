@@ -80,6 +80,17 @@ export interface InteractionRecord {
   response?: Record<string, unknown>;
 }
 
+export interface SourceCollisionEvidence {
+  checkpoint: string;
+  baseCommit: string;
+  sourceHead?: string;
+  dirtyPaths: string[];
+  committedPaths: string[];
+  overlappingPaths: string[];
+  unavailable: boolean;
+  detectedAt: string;
+}
+
 interface TaskRecordFields {
   taskId: string;
   contract: TaskContractV1;
@@ -113,6 +124,7 @@ interface TaskRecordFields {
   usage: UsageTotals;
   reviewSummary?: string;
   commitHash?: string;
+  sourceCollision?: SourceCollisionEvidence;
 }
 
 /** Persisted v1 task records: the only version eligible for migration to v2. */

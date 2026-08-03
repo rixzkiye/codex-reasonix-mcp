@@ -7,7 +7,7 @@ import type { BridgeConfig } from './config.js';
 import { runChecked, runCommand } from './command.js';
 import { BridgeRuntime } from './runtime.js';
 import { StateStore } from './state.js';
-import type { TaskRecord, UsageTotals } from './types.js';
+import type { JournalEvent, TaskRecord, UsageTotals } from './types.js';
 
 export interface DoctorCheck {
   name: string;
@@ -166,6 +166,23 @@ async function waitForTask(
   }
 }
 
+async function waitForEvents(
+  runtime: BridgeRuntime,
+  taskId: string,
+  deadline: number,
+  accept: (events: JournalEvent[]) => boolean,
+): Promise<JournalEvent[]> {
+  for (;;) {
+    const events = await runtime.store.readEvents(taskId);
+    if (accept(events)) return events;
+    if (Date.now() >= deadline) throw new DeepDoctorTimeout('Deep doctor exceeded its deadline');
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, 25);
+      timer.unref();
+    });
+  }
+}
+
 function emptyProofs(): DeepDoctorProofs {
   return {
     structuredEdit: false,
@@ -270,7 +287,14 @@ export async function runDeepDoctor(
     if (review.status !== 'review_required') {
       throw new Error(`Goal stopped in ${review.status}: ${review.reason ?? review.phase}`);
     }
-    const events = await runtime.store.readEvents('deep-doctor');
+    const events = await waitForEvents(
+      runtime,
+      'deep-doctor',
+      deadline,
+      (items) =>
+        items.some((event) => event.type === 'command_postflight_passed') ||
+        items.some((event) => event.type === 'command_postflight_failed'),
+    );
     proofs.structuredEdit = events.some(
       (event) =>
         event.type === 'permission_auto_allowed' &&

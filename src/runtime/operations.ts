@@ -26,7 +26,7 @@ export interface OperationDependencies {
   store: StateStore;
   collision: Pick<
     CollisionAccess,
-    'assertExistingTask' | 'assertTaskRepository' | 'holdLease' | 'releaseLease'
+    'assertExistingTask' | 'assertTaskRepository' | 'holdLease' | 'releaseLease' | 'guardTask'
   >;
   permissions: Pick<PermissionAccess, 'respond' | 'cancelTaskInteractions'>;
   sessions: Pick<
@@ -64,6 +64,7 @@ export class OperationController implements OperationAccess {
         if (!existing.inspectedAfterPause) {
           return { ...taskView(existing), resume_required: true, inspect_required: true };
         }
+        await this.dependencies.collision.guardTask(taskId, 'resume');
         const currentNetworkEnabled =
           this.dependencies.config.networkEnabled && sandbox.networkEnabled;
         const currentFingerprint = configFingerprint({
@@ -145,6 +146,7 @@ export class OperationController implements OperationAccess {
     const taskId = validateTaskId(input.task_id);
     const task = await this.dependencies.store.loadTask(taskId);
     if (input.action === 'respond') {
+      await this.dependencies.collision.guardTask(taskId, 'resume_after_interaction');
       return await this.dependencies.permissions.respond(task, input);
     }
     if (input.action === 'cancel') return await this.cancel(task);
@@ -165,6 +167,7 @@ export class OperationController implements OperationAccess {
       );
     }
     const worker = this.dependencies.sessions.workerForTask(task);
+    await this.dependencies.collision.guardTask(task.taskId, 'before_steer');
     let repairRound = task.repairRounds;
     if (task.status === 'review_required') {
       if (task.repairRounds >= 2) {

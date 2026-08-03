@@ -147,6 +147,19 @@ export const inspectInputSchema = z
   })
   .strict();
 
+const sourceCollisionEvidenceSchema = z
+  .object({
+    checkpoint: z.string().min(1),
+    baseCommit: z.string().min(1),
+    sourceHead: z.string().min(1).optional(),
+    dirtyPaths: z.array(z.string()),
+    committedPaths: z.array(z.string()),
+    overlappingPaths: z.array(z.string()),
+    unavailable: z.boolean(),
+    detectedAt: z.string().min(1),
+  })
+  .strict();
+
 const taskViewSchema = z
   .object({
     task_id: taskIdSchema,
@@ -164,6 +177,7 @@ const taskViewSchema = z
       .string()
       .regex(/^[0-9a-f]{40,64}$/)
       .optional(),
+    source_collision: sourceCollisionEvidenceSchema.optional(),
   })
   .strict();
 

@@ -29,6 +29,7 @@ export class BridgeRuntime {
     this.permissions = new PermissionController({
       config,
       store: this.store,
+      collision: this.collision,
       taskIdForSession: (sessionId) => this.sessions.taskIdForSession(sessionId),
       cancelSession: async (task) => await this.sessions.cancelWorker(task),
       steerRecovery: async (task, message) => {

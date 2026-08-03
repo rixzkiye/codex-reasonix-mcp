@@ -63,14 +63,24 @@ async function fixture(timeoutSeconds = 1) {
   await store.createTask(task);
   const cancelSession = vi.fn(() => Promise.resolve());
   const steerRecovery = vi.fn(() => Promise.resolve());
+  const guardTask = vi.fn(() => Promise.resolve());
   const controller = new PermissionController({
     config: loadConfig({ stateDir }),
     store,
+    collision: { guardTask },
     taskIdForSession: (sessionId) => (sessionId === task.acpSessionId ? task.taskId : undefined),
     cancelSession,
     steerRecovery,
   });
-  return { controller, store, task, repositoryRoot, cancelSession, steerRecovery };
+  return {
+    controller,
+    store,
+    task,
+    repositoryRoot,
+    cancelSession,
+    steerRecovery,
+    guardTask,
+  };
 }
 
 afterEach(() => {
@@ -103,12 +113,16 @@ describe('command supervision', () => {
 
   it('clears the watchdog on completion and performs immediate postflight scans', async () => {
     vi.useFakeTimers();
-    const { controller, store, task, cancelSession } = await fixture();
+    const { controller, store, task, cancelSession, guardTask } = await fixture();
     await controller.onPermission(permission(task, ['pnpm', 'test']));
     await controller.onToolCallUpdate(task.taskId, 'command-1', 'completed');
     await vi.advanceTimersByTimeAsync(2_000);
     expect((await store.loadTask(task.taskId)).status).toBe('running');
     expect(cancelSession).not.toHaveBeenCalled();
+    expect(guardTask.mock.calls).toEqual([
+      [task.taskId, 'before_worker_mutation'],
+      [task.taskId, 'after_worker_mutation'],
+    ]);
     expect((await store.readEvents(task.taskId)).map((event) => event.type)).toContain(
       'command_postflight_passed',
     );

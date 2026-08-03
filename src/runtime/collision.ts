@@ -1,9 +1,16 @@
 import type { BridgeConfig } from '../config.js';
 import { BridgeError } from '../errors.js';
 import { acquireLease, type Lease } from '../lease.js';
-import { resolveBaseCommit } from '../repository.js';
+import { canTransition, transitionTask } from '../lifecycle.js';
+import { isWriteAllowed } from '../contracts.js';
+import { resolveBaseCommit, sourceRepositoryChanges } from '../repository.js';
 import type { StateStore } from '../state.js';
-import type { RepositoryIdentity, TaskRecord } from '../types.js';
+import {
+  TERMINAL_STATUSES,
+  type RepositoryIdentity,
+  type SourceCollisionEvidence,
+  type TaskRecord,
+} from '../types.js';
 
 interface RepositoryLease {
   lease: Lease;
@@ -20,7 +27,12 @@ export interface LeaseAccess {
   releaseLease(repositoryId: string, taskId: string): Promise<void>;
 }
 
-export interface CollisionAccess extends LeaseAccess {
+export interface SourceCollisionAccess {
+  guardTask(taskId: string, checkpoint: string): Promise<void>;
+  scanTask(task: TaskRecord, checkpoint: string): Promise<SourceCollisionEvidence | undefined>;
+}
+
+export interface CollisionAccess extends LeaseAccess, SourceCollisionAccess {
   assertExistingTask(
     existing: TaskRecord,
     repository: RepositoryIdentity,
@@ -70,6 +82,88 @@ export class CollisionController implements CollisionAccess {
     if (repository.id !== task.repository.id) {
       throw new BridgeError('task_conflict', 'Task belongs to a different repository');
     }
+  }
+
+  async scanTask(
+    task: TaskRecord,
+    checkpoint: string,
+  ): Promise<SourceCollisionEvidence | undefined> {
+    const detectedAt = new Date().toISOString();
+    try {
+      const changes = await sourceRepositoryChanges(task.repository, task.baseCommit);
+      const dirtyOverlap = changes.dirtyPaths.filter((candidate) =>
+        isWriteAllowed(task.contract, candidate),
+      );
+      const committedOverlap = changes.committedPaths.filter((candidate) =>
+        isWriteAllowed(task.contract, candidate),
+      );
+      const overlappingPaths = [...new Set([...dirtyOverlap, ...committedOverlap])].sort();
+      if (overlappingPaths.length === 0) return undefined;
+      return {
+        checkpoint,
+        baseCommit: task.baseCommit,
+        sourceHead: changes.sourceHead,
+        dirtyPaths: changes.dirtyPaths,
+        committedPaths: changes.committedPaths,
+        overlappingPaths,
+        unavailable: false,
+        detectedAt,
+      };
+    } catch {
+      return {
+        checkpoint,
+        baseCommit: task.baseCommit,
+        dirtyPaths: [],
+        committedPaths: [],
+        overlappingPaths: [],
+        unavailable: true,
+        detectedAt,
+      };
+    }
+  }
+
+  async guardTask(taskId: string, checkpoint: string): Promise<void> {
+    const task = await this.dependencies.store.loadTask(taskId);
+    const collision = await this.scanTask(task, checkpoint);
+    if (!collision) {
+      if (task.sourceCollision) {
+        await this.dependencies.store.recordEvent(
+          taskId,
+          'source_collision_cleared',
+          { checkpoint },
+          (record) => {
+            delete record.sourceCollision;
+          },
+        );
+      }
+      return;
+    }
+
+    const message = collision.unavailable
+      ? 'Source repository is unavailable; ownership cannot be established'
+      : `Source changes overlap task write_scope: ${collision.overlappingPaths.join(', ')}`;
+    const paused = await this.dependencies.store.recordEvent(
+      taskId,
+      'source_collision_detected',
+      collision,
+      (record) => {
+        record.sourceCollision = collision;
+        if (!TERMINAL_STATUSES.has(record.status) && canTransition(record.status, 'paused')) {
+          transitionTask(record, 'paused', 'source_collision', message);
+          record.inspectedAfterPause = false;
+        }
+      },
+    );
+    await this.releaseLease(paused.repository.id, paused.taskId);
+    throw new BridgeError('ownership_ambiguous', message, {
+      checkpoint,
+      baseCommit: collision.baseCommit,
+      sourceHead: collision.sourceHead,
+      dirtyPaths: collision.dirtyPaths,
+      committedPaths: collision.committedPaths,
+      overlappingPaths: collision.overlappingPaths,
+      unavailable: collision.unavailable,
+    });
   }
 
   async holdLease(repository: RepositoryIdentity, taskId: string): Promise<void> {

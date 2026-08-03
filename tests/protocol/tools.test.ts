@@ -1,8 +1,14 @@
+import { mkdtemp } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { describe, expect, it, vi } from 'vitest';
 
-import type { BridgeRuntime } from '../../src/runtime.js';
+import { loadConfig } from '../../src/config.js';
+import { parseTaskContract } from '../../src/contracts.js';
+import { BridgeRuntime, makeTaskRecordForTest } from '../../src/runtime.js';
 import { createMcpServer } from '../../src/server.js';
 import { contractFixture } from '../helpers.js';
 
@@ -35,6 +41,17 @@ const TASK_VIEW = {
   worktree: '/tmp/reasonix/task-1',
   repair_rounds: 0,
   updated_at: '2026-08-03T00:00:00.000Z',
+};
+
+const SOURCE_COLLISION = {
+  checkpoint: 'review_readiness',
+  baseCommit: 'b'.repeat(40),
+  sourceHead: 'c'.repeat(40),
+  dirtyPaths: ['src/index.ts'],
+  committedPaths: [],
+  overlappingPaths: ['src/index.ts'],
+  unavailable: false,
+  detectedAt: '2026-08-03T00:00:01.000Z',
 };
 
 function schemaObject(value: unknown, path: string): Record<string, unknown> {
@@ -305,7 +322,13 @@ describe('stable MCP surface', () => {
   it('returns schema-conforming structured content for every successful tool', async () => {
     const runtime = {
       delegate: () => Promise.resolve({ ...TASK_VIEW, resume_required: true }),
-      control: () => Promise.resolve({ ...TASK_VIEW, state: 'cancelled', phase: 'cancelled' }),
+      control: () =>
+        Promise.resolve({
+          ...TASK_VIEW,
+          state: 'cancelled',
+          phase: 'cancelled',
+          source_collision: SOURCE_COLLISION,
+        }),
       inspect: () =>
         Promise.resolve({
           task_id: 'task-1',
@@ -339,6 +362,7 @@ describe('stable MCP surface', () => {
         ...TASK_VIEW,
         state: 'cancelled',
         phase: 'cancelled',
+        source_collision: SOURCE_COLLISION,
       });
       expect(inspect.isError).not.toBe(true);
       expect(inspect.structuredContent).toEqual({
@@ -350,6 +374,48 @@ describe('stable MCP surface', () => {
     } finally {
       await client.close();
       await server.close();
+    }
+  });
+
+  it('accepts a normal taskView returned by the real runtime', async () => {
+    const stateDir = await mkdtemp(path.join(os.tmpdir(), 'reasonix-protocol-runtime-'));
+    const runtime = new BridgeRuntime(loadConfig({ stateDir }));
+    await runtime.initialize();
+    const task = makeTaskRecordForTest(
+      'real-task-view',
+      parseTaskContract(contractFixture()),
+      {
+        id: 'real-repository',
+        root: path.join(stateDir, 'repository'),
+        commonDir: path.join(stateDir, 'repository', '.git'),
+        head: 'a'.repeat(40),
+      },
+      path.join(stateDir, 'worker'),
+    );
+    task.status = 'running';
+    task.phase = 'goal_running';
+    await runtime.store.createTask(task);
+
+    const server = createMcpServer(runtime);
+    const client = new Client({ name: 'protocol-real-runtime', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    try {
+      const result = await client.callTool({
+        name: 'reasonix_control',
+        arguments: { task_id: task.taskId, action: 'cancel' },
+      });
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({
+        task_id: task.taskId,
+        state: 'cancelled',
+        phase: 'cancelled',
+      });
+      expect(result.structuredContent).toHaveProperty('source_collision', undefined);
+    } finally {
+      await client.close();
+      await server.close();
+      await runtime.shutdown();
     }
   });
 

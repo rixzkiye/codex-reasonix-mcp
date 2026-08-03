@@ -271,6 +271,58 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
           "minLength": 1,
           "type": "string",
         },
+        "source_collision": {
+          "additionalProperties": false,
+          "properties": {
+            "baseCommit": {
+              "minLength": 1,
+              "type": "string",
+            },
+            "checkpoint": {
+              "minLength": 1,
+              "type": "string",
+            },
+            "committedPaths": {
+              "items": {
+                "type": "string",
+              },
+              "type": "array",
+            },
+            "detectedAt": {
+              "minLength": 1,
+              "type": "string",
+            },
+            "dirtyPaths": {
+              "items": {
+                "type": "string",
+              },
+              "type": "array",
+            },
+            "overlappingPaths": {
+              "items": {
+                "type": "string",
+              },
+              "type": "array",
+            },
+            "sourceHead": {
+              "minLength": 1,
+              "type": "string",
+            },
+            "unavailable": {
+              "type": "boolean",
+            },
+          },
+          "required": [
+            "checkpoint",
+            "baseCommit",
+            "dirtyPaths",
+            "committedPaths",
+            "overlappingPaths",
+            "unavailable",
+            "detectedAt",
+          ],
+          "type": "object",
+        },
         "state": {
           "enum": [
             "provisioning",
@@ -431,6 +483,58 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
         "session_id": {
           "minLength": 1,
           "type": "string",
+        },
+        "source_collision": {
+          "additionalProperties": false,
+          "properties": {
+            "baseCommit": {
+              "minLength": 1,
+              "type": "string",
+            },
+            "checkpoint": {
+              "minLength": 1,
+              "type": "string",
+            },
+            "committedPaths": {
+              "items": {
+                "type": "string",
+              },
+              "type": "array",
+            },
+            "detectedAt": {
+              "minLength": 1,
+              "type": "string",
+            },
+            "dirtyPaths": {
+              "items": {
+                "type": "string",
+              },
+              "type": "array",
+            },
+            "overlappingPaths": {
+              "items": {
+                "type": "string",
+              },
+              "type": "array",
+            },
+            "sourceHead": {
+              "minLength": 1,
+              "type": "string",
+            },
+            "unavailable": {
+              "type": "boolean",
+            },
+          },
+          "required": [
+            "checkpoint",
+            "baseCommit",
+            "dirtyPaths",
+            "committedPaths",
+            "overlappingPaths",
+            "unavailable",
+            "detectedAt",
+          ],
+          "type": "object",
         },
         "state": {
           "enum": [
@@ -733,6 +837,58 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
                     "session_id": {
                       "minLength": 1,
                       "type": "string",
+                    },
+                    "source_collision": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "baseCommit": {
+                          "minLength": 1,
+                          "type": "string",
+                        },
+                        "checkpoint": {
+                          "minLength": 1,
+                          "type": "string",
+                        },
+                        "committedPaths": {
+                          "items": {
+                            "type": "string",
+                          },
+                          "type": "array",
+                        },
+                        "detectedAt": {
+                          "minLength": 1,
+                          "type": "string",
+                        },
+                        "dirtyPaths": {
+                          "items": {
+                            "type": "string",
+                          },
+                          "type": "array",
+                        },
+                        "overlappingPaths": {
+                          "items": {
+                            "type": "string",
+                          },
+                          "type": "array",
+                        },
+                        "sourceHead": {
+                          "minLength": 1,
+                          "type": "string",
+                        },
+                        "unavailable": {
+                          "type": "boolean",
+                        },
+                      },
+                      "required": [
+                        "checkpoint",
+                        "baseCommit",
+                        "dirtyPaths",
+                        "committedPaths",
+                        "overlappingPaths",
+                        "unavailable",
+                        "detectedAt",
+                      ],
+                      "type": "object",
                     },
                     "state": {
                       "enum": [

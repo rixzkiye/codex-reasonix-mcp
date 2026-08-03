@@ -11,13 +11,13 @@ import {
   assertChangedFilesInScope,
   assertFileSizes,
   assertNoWorkerCommits,
-  assertSourceClean,
   changedFiles,
 } from '../repository.js';
 import { scanWorkingFiles } from '../security.js';
 import type { StateStore } from '../state.js';
 import type { InteractionRecord, TaskRecord } from '../types.js';
 import type { ControlInput } from './api.js';
+import type { SourceCollisionAccess } from './collision.js';
 import { now, taskView } from './shared.js';
 
 interface PendingInteraction {
@@ -33,6 +33,7 @@ export interface PermissionDependencies {
   taskIdForSession(sessionId: string): string | undefined;
   cancelSession(task: TaskRecord): Promise<void>;
   steerRecovery(task: TaskRecord, message: string): Promise<void>;
+  collision: Pick<SourceCollisionAccess, 'guardTask'>;
 }
 
 export interface PermissionAccess {
@@ -73,7 +74,6 @@ export async function scanTaskAfterCommand(
   await assertChangedFilesInScope(task.worktree, task.contract, files);
   await assertFileSizes(task.worktree, files, config);
   await scanWorkingFiles(task.worktree, files, config);
-  await assertSourceClean(task.repository);
   return files;
 }
 
@@ -178,6 +178,13 @@ export class PermissionController implements PermissionAccess {
     const task = await this.dependencies.store.loadTask(taskId);
     const decision = await decidePermission(params, task.contract, task.worktree);
     if (decision.action === 'allow') {
+      try {
+        await this.dependencies.collision.guardTask(taskId, 'before_worker_mutation');
+      } catch (error) {
+        if (!(error instanceof BridgeError) || error.code !== 'ownership_ambiguous') throw error;
+        this.defer(async () => await this.dependencies.cancelSession(task));
+        return permissionSelection(params, 'reject');
+      }
       await this.dependencies.store.recordEvent(taskId, 'permission_auto_allowed', {
         toolCallId: params.toolCall.toolCallId,
         reason: decision.reason,
@@ -270,9 +277,9 @@ export class PermissionController implements PermissionAccess {
   ): Promise<void> {
     if (status !== 'completed' && status !== 'failed') return;
     const active = this.clearCommand(this.commandKey(taskId, toolCallId));
-    if (!active) return;
-    const durationMs = Date.now() - active.startedAt;
+    const durationMs = active ? Date.now() - active.startedAt : undefined;
     try {
+      await this.dependencies.collision.guardTask(taskId, 'after_worker_mutation');
       const task = await this.dependencies.store.loadTask(taskId);
       const files = await scanTaskAfterCommand(task, this.dependencies.config);
       await this.dependencies.store.recordEvent(taskId, 'command_postflight_passed', {
@@ -282,6 +289,11 @@ export class PermissionController implements PermissionAccess {
         changedFiles: files,
       });
     } catch (error) {
+      if (error instanceof BridgeError && error.code === 'ownership_ambiguous') {
+        const paused = await this.dependencies.store.loadTask(taskId);
+        await this.dependencies.cancelSession(paused);
+        return;
+      }
       const reason = error instanceof Error ? error.message : String(error);
       const paused = await this.pauseTask(
         taskId,

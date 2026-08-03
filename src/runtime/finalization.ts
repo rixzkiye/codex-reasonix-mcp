@@ -19,14 +19,14 @@ import type { StateStore } from '../state.js';
 import type { AcceptanceEvidence, RepositoryIdentity, TaskRecord } from '../types.js';
 import { runAllVerification } from '../verification.js';
 import type { ControlInput } from './api.js';
-import type { LeaseAccess } from './collision.js';
+import type { CollisionAccess } from './collision.js';
 import type { SessionAccess } from './session-supervision.js';
 import { sha256, taskView } from './shared.js';
 
 export interface FinalizationDependencies {
   config: BridgeConfig;
   store: StateStore;
-  collision: LeaseAccess;
+  collision: Pick<CollisionAccess, 'guardTask' | 'holdLease' | 'releaseLease'>;
   sessions: Pick<SessionAccess, 'workerForTask'>;
 }
 
@@ -56,6 +56,7 @@ export class FinalizationController implements FinalizationAccess {
     if (task.status !== 'review_required' || task.repairActive) {
       throw new BridgeError('invalid_state', 'finalize requires idle review_required state');
     }
+    await this.dependencies.collision.guardTask(task.taskId, 'finalize_start');
     const worker = this.dependencies.sessions.workerForTask(task);
     const status = await worker.status(task.acpSessionId!);
     if (status.state !== 'idle') {
@@ -184,6 +185,7 @@ export class FinalizationController implements FinalizationAccess {
       );
     }
     await assertActive();
+    await this.dependencies.collision.guardTask(taskId, 'after_verification');
     await assertNoWorkerCommits(task.worktree, task.baseCommit);
     const verifiedFiles = await changedFiles(task.worktree);
     await assertChangedFilesInScope(task.worktree, task.contract, verifiedFiles);
@@ -236,6 +238,7 @@ export class FinalizationController implements FinalizationAccess {
     );
 
     await assertActive();
+    await this.dependencies.collision.guardTask(taskId, 'before_staging');
     task = await this.dependencies.store.loadTask(taskId);
     const before = verifiedDiff;
     await stageExplicitFiles(task.worktree, files);
@@ -256,12 +259,14 @@ export class FinalizationController implements FinalizationAccess {
     });
 
     await assertActive();
+    await this.dependencies.collision.guardTask(taskId, 'before_commit');
     await this.dependencies.store.recordEvent(taskId, 'commit_started', {}, (record) => {
       if (record.status !== 'verifying') {
         throw new BridgeError('invalid_state', `Finalization stopped in ${record.status}`);
       }
       record.phase = 'committing';
     });
+    await this.dependencies.collision.guardTask(taskId, 'immediately_before_commit');
     const commitHash = await createAtomicCommit(task.worktree, task.baseCommit, commitMessage);
     await this.dependencies.store.recordEvent(
       taskId,

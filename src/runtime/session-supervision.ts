@@ -14,7 +14,7 @@ import { redact, redactString } from '../redaction.js';
 import { createIsolatedWorktree } from '../repository.js';
 import type { StateStore } from '../state.js';
 import { TERMINAL_STATUSES, type TaskRecord } from '../types.js';
-import type { LeaseAccess } from './collision.js';
+import type { CollisionAccess } from './collision.js';
 import type { PermissionAccess } from './permissions.js';
 import { statusToUsage } from './shared.js';
 
@@ -22,7 +22,7 @@ export interface SessionSupervisionDependencies {
   config: BridgeConfig;
   store: StateStore;
   permissions: Pick<PermissionAccess, 'onPermission' | 'onToolCallUpdate' | 'finishPrompt'>;
-  collision: Pick<LeaseAccess, 'releaseLease'>;
+  collision: Pick<CollisionAccess, 'guardTask' | 'releaseLease'>;
 }
 
 export interface SessionAccess {
@@ -59,15 +59,17 @@ export class SessionSupervisor implements SessionAccess {
   }
 
   beginProvision(taskId: string): void {
-    void this.provisionTask(taskId).catch(
-      async (error: unknown) => await this.failTask(taskId, error),
-    );
+    void this.provisionTask(taskId).catch(async (error: unknown) => {
+      if (error instanceof BridgeError && error.code === 'ownership_ambiguous') return;
+      await this.failTask(taskId, error);
+    });
   }
 
   beginResume(task: TaskRecord): void {
-    void this.resumeTask(task).catch(
-      async (error: unknown) => await this.failTask(task.taskId, error),
-    );
+    void this.resumeTask(task).catch(async (error: unknown) => {
+      if (error instanceof BridgeError && error.code === 'ownership_ambiguous') return;
+      await this.failTask(task.taskId, error);
+    });
   }
 
   workerForTask(task: TaskRecord): ReasonixProcess {
@@ -136,6 +138,7 @@ export class SessionSupervisor implements SessionAccess {
       record.phase = 'starting_reasonix';
     });
     task = await this.dependencies.store.loadTask(taskId);
+    await this.dependencies.collision.guardTask(taskId, 'before_worker_start');
     const worker = await this.pool.forRepository(task.repository, task.networkEnabled);
     const session = await worker.createSession(taskId, task.worktree, task.networkEnabled);
     this.sessionToTask.set(session.sessionId, taskId);
@@ -156,6 +159,7 @@ export class SessionSupervisor implements SessionAccess {
   }
 
   private async resumeTask(task: TaskRecord): Promise<void> {
+    await this.dependencies.collision.guardTask(task.taskId, 'resume');
     const worker = await this.pool.forRepository(task.repository, task.networkEnabled);
     if (!task.acpSessionId) {
       const session = await worker.createSession(task.taskId, task.worktree, task.networkEnabled);
@@ -262,6 +266,16 @@ export class SessionSupervisor implements SessionAccess {
     const taskId = this.sessionToTask.get(sessionId);
     if (!taskId) return;
     await this.dependencies.permissions.finishPrompt(taskId);
+    try {
+      await this.dependencies.collision.guardTask(taskId, 'review_readiness');
+    } catch (collision) {
+      if (collision instanceof BridgeError && collision.code === 'ownership_ambiguous') {
+        const task = await this.dependencies.store.loadTask(taskId);
+        await this.cancelWorker(task);
+        return;
+      }
+      throw collision;
+    }
     if (error || !status) {
       await this.failTask(
         taskId,

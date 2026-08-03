@@ -137,6 +137,26 @@ async function persistAsVersion(
 }
 
 describe('private persistent state', () => {
+  it('maintains the private active-task sentinel across active and terminal state', async () => {
+    const store = await newStore();
+    const task = sampleTask('hook-sentinel');
+    await store.createTask(task);
+    const sentinelPath = store.activeHookSentinelPath(task.repository.id, task.taskId);
+    expect(JSON.parse(await readFile(sentinelPath, 'utf8'))).toEqual({
+      schemaVersion: 1,
+      taskId: task.taskId,
+      repositoryId: task.repository.id,
+    });
+
+    await store.updateTask(task.taskId, (record) => {
+      record.status = 'cancelled';
+      record.phase = 'cancelled';
+    });
+    await expect(readFile(sentinelPath, 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+  });
+
   it('writes private snapshots, append-only events, and pauses interrupted tasks on restart', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'reasonix-state-'));
     const store = new StateStore(root);
