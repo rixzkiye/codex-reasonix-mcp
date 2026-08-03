@@ -328,7 +328,7 @@ export class BridgeRuntime {
     const worktree = path.join(this.store.worktreesDir(), repository.id, taskId);
     const networkEnabled = this.config.networkEnabled && sandbox.networkEnabled;
     const record: TaskRecord = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       taskId,
       contract,
       contractHash: hash,
@@ -1139,7 +1139,7 @@ export function makeTaskRecordForTest(
 ): TaskRecord {
   const timestamp = now();
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     taskId,
     contract,
     contractHash: contractHash(contract),
