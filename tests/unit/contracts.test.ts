@@ -7,8 +7,11 @@ import { describe, expect, it } from 'vitest';
 import {
   assertPathInsideWorktree,
   canonicalContractJson,
+  contractAllowedCommands,
   contractHash,
+  isCommandAllowedByContract,
   isWriteAllowed,
+  lintTaskContract,
   parseTaskContract,
   renderGoalPrompt,
 } from '../../src/contracts.js';
@@ -27,6 +30,83 @@ describe('TaskContractV1', () => {
     expect(first.verification[0]?.cwd).toBe('.');
     expect(contractHash(first)).toBe(contractHash(second));
     expect(canonicalContractJson(first)).toMatch(/"schema_version": 1/);
+  });
+
+  it('preserves the legacy contract hash when allowed_commands is absent', () => {
+    const contract = parseTaskContract({
+      schema_version: 1,
+      objective: 'Legacy objective',
+      user_outcome: 'Legacy outcome',
+      verified_context: [],
+      write_scope: ['src/**'],
+      forbidden_scope: [],
+      invariants: [],
+      non_goals: [],
+      acceptance_criteria: [{ id: 'ac', requirement: 'It works', evidence: 'automated' }],
+      verification: [{ id: 'verify', argv: ['node', '--version'], proves: ['ac'] }],
+      pause_conditions: [],
+    });
+
+    expect(contract).not.toHaveProperty('allowed_commands');
+    expect(contractHash(contract)).toBe(
+      '717c0368d09239233ae07e38ecf639c883f6d4f74448575d3d07717246e438b6',
+    );
+  });
+
+  it('normalizes allowed command defaults and matches exact argv plus cwd', () => {
+    const contract = parseTaskContract({
+      ...contractFixture(),
+      allowed_commands: [{ id: 'project_test', argv: ['pnpm', 'test'], cwd: './packages/app' }],
+    });
+
+    expect(contract.allowed_commands).toEqual([
+      {
+        id: 'project_test',
+        argv: ['pnpm', 'test'],
+        cwd: 'packages/app',
+        timeout_seconds: 120,
+      },
+    ]);
+    expect(isCommandAllowedByContract(contract, ['pnpm', 'test'], 'packages/app')).toBe(true);
+    expect(isCommandAllowedByContract(contract, ['pnpm', 'test', '--run'], 'packages/app')).toBe(
+      false,
+    );
+    expect(isCommandAllowedByContract(contract, ['pnpm', 'test'], '.')).toBe(false);
+  });
+
+  it('implicitly allows verification without turning allowed commands into evidence', () => {
+    const contract = parseTaskContract({
+      ...contractFixture(),
+      allowed_commands: [{ id: 'format', argv: ['pnpm', 'format'] }],
+    });
+    const commands = contractAllowedCommands(contract);
+
+    expect(commands.map((command) => command.id)).toEqual(['verify_result', 'format']);
+    expect(isCommandAllowedByContract(contract, contract.verification[0]!.argv, '.')).toBe(true);
+    expect(contract.allowed_commands?.[0]).not.toHaveProperty('proves');
+  });
+
+  it('lints all safely-evaluable semantic problems together', () => {
+    const fixture = contractFixture();
+    const issues = lintTaskContract({
+      ...fixture,
+      verified_context: [{ path: '/absolute', reason: 'invalid path' }],
+      write_scope: ['../escape'],
+      acceptance_criteria: [...fixture.acceptance_criteria, { ...fixture.acceptance_criteria[0] }],
+      verification: [{ ...fixture.verification[0], cwd: '../../escape', proves: ['unknown'] }],
+    });
+
+    expect(issues.map((issue) => issue.path)).toEqual(
+      expect.arrayContaining([
+        'verified_context.0.path',
+        'write_scope.0',
+        'verification.0.cwd',
+        'acceptance_criteria.1.id',
+        'verification.0.proves.0',
+        'verification',
+      ]),
+    );
+    expect(issues).toHaveLength(6);
   });
 
   it.each(['/absolute', '../escape', 'src/../../escape', 'C:\\escape'])(

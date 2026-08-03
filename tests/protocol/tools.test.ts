@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { BridgeRuntime } from '../../src/runtime.js';
 import { createMcpServer } from '../../src/server.js';
+import { contractFixture } from '../helpers.js';
 
 // Pinned compatibility target: Codex CLI 0.146.0 (commit e363b08c), whose
 // JsonSchema.items field accepts one boxed schema rather than tuple-form arrays.
@@ -23,6 +24,18 @@ const CODEX_0146_PRIMITIVE_TYPES = new Set([
   'array',
   'null',
 ]);
+
+const TASK_VIEW = {
+  task_id: 'task-1',
+  state: 'running',
+  phase: 'goal_running',
+  contract_hash: 'a'.repeat(64),
+  repository_id: 'repository-1',
+  branch: 'reasonix/task-1',
+  worktree: '/tmp/reasonix/task-1',
+  repair_rounds: 0,
+  updated_at: '2026-08-03T00:00:00.000Z',
+};
 
 function schemaObject(value: unknown, path: string): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -123,6 +136,12 @@ describe('stable MCP surface', () => {
       }
 
       const delegate = result.tools.find((tool) => tool.name === 'reasonix_delegate');
+      expect(delegate?.annotations).toEqual({
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: true,
+      });
       expect(delegate?.description).toContain('explicit user request or approval');
       expect(delegate?.description).toContain(
         'Never substitute native Codex subagents for approved Reasonix work',
@@ -151,8 +170,46 @@ describe('stable MCP surface', () => {
         items: { type: 'string', maxLength: 4096 },
       });
       expect(Array.isArray(argv.items)).toBe(false);
+      const allowedCommands = schemaObject(
+        contractProperties.allowed_commands,
+        'delegate.contract.allowed_commands',
+      );
+      const allowedItem = schemaObject(
+        allowedCommands.items,
+        'delegate.contract.allowed_commands.items',
+      );
+      const allowedArgv = schemaObject(
+        schemaObject(allowedItem.properties, 'delegate.contract.allowed_commands.items.properties')
+          .argv,
+        'delegate.contract.allowed_commands.argv',
+      );
+      expect(allowedArgv).toMatchObject({
+        type: 'array',
+        minItems: 1,
+        maxItems: 128,
+        items: { type: 'string', maxLength: 4096 },
+      });
+      expect(schemaObject(delegate?.outputSchema, 'delegate.outputSchema').required).toEqual(
+        expect.arrayContaining([
+          'task_id',
+          'state',
+          'phase',
+          'contract_hash',
+          'repository_id',
+          'branch',
+          'worktree',
+          'repair_rounds',
+          'updated_at',
+        ]),
+      );
 
       const control = result.tools.find((tool) => tool.name === 'reasonix_control');
+      expect(control?.annotations).toEqual({
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: true,
+      });
       expect(control?.description).toContain('created by reasonix_delegate');
       const controlProperties = schemaObject(control?.inputSchema.properties, 'control');
       expect(Object.keys(controlProperties).sort()).toEqual(
@@ -178,6 +235,12 @@ describe('stable MCP surface', () => {
         'close',
       ]);
       const inspect = result.tools.find((tool) => tool.name === 'reasonix_inspect');
+      expect(inspect?.annotations).toEqual({
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      });
       expect(inspect?.description).toContain('Use for a Reasonix task');
       expect(inspect?.description).toContain('bounded status, evidence');
       expect(
@@ -224,10 +287,66 @@ describe('stable MCP surface', () => {
         expect(content.type).toBe('text');
         if (typeof content.text !== 'string') throw new Error('Expected text error content');
         expect(JSON.parse(content.text) as unknown).toMatchObject({
-          error: { code: 'invalid_request' },
+          error: {
+            code: 'invalid_request',
+            retryable: false,
+            next_action: 'fix_request',
+          },
         });
+        expect(result.structuredContent).toBeUndefined();
       }
       expect(control).not.toHaveBeenCalled();
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it('returns schema-conforming structured content for every successful tool', async () => {
+    const runtime = {
+      delegate: () => Promise.resolve({ ...TASK_VIEW, resume_required: true }),
+      control: () => Promise.resolve({ ...TASK_VIEW, state: 'cancelled', phase: 'cancelled' }),
+      inspect: () =>
+        Promise.resolve({
+          task_id: 'task-1',
+          sections: { summary: 'done', changed_files: ['src/index.ts'] },
+          truncated: false,
+          updated_at: TASK_VIEW.updated_at,
+        }),
+    } as unknown as BridgeRuntime;
+    const server = createMcpServer(runtime);
+    const client = new Client({ name: 'protocol-test', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    try {
+      const delegate = await client.callTool({
+        name: 'reasonix_delegate',
+        arguments: { task_id: 'task-1', contract: contractFixture() },
+      });
+      const control = await client.callTool({
+        name: 'reasonix_control',
+        arguments: { task_id: 'task-1', action: 'cancel' },
+      });
+      const inspect = await client.callTool({
+        name: 'reasonix_inspect',
+        arguments: { task_id: 'task-1', include: ['summary', 'changed_files'] },
+      });
+
+      expect(delegate.isError).not.toBe(true);
+      expect(delegate.structuredContent).toEqual({ ...TASK_VIEW, resume_required: true });
+      expect(control.isError).not.toBe(true);
+      expect(control.structuredContent).toEqual({
+        ...TASK_VIEW,
+        state: 'cancelled',
+        phase: 'cancelled',
+      });
+      expect(inspect.isError).not.toBe(true);
+      expect(inspect.structuredContent).toEqual({
+        task_id: 'task-1',
+        sections: { summary: 'done', changed_files: ['src/index.ts'] },
+        truncated: false,
+        updated_at: TASK_VIEW.updated_at,
+      });
     } finally {
       await client.close();
       await server.close();

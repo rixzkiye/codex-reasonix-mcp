@@ -45,6 +45,41 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
               "minItems": 1,
               "type": "array",
             },
+            "allowed_commands": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "argv": {
+                    "items": {
+                      "maxLength": 4096,
+                      "type": "string",
+                    },
+                    "maxItems": 128,
+                    "minItems": 1,
+                    "type": "array",
+                  },
+                  "cwd": {
+                    "maxLength": 1024,
+                    "type": "string",
+                  },
+                  "id": {
+                    "$ref": "#/properties/contract/properties/acceptance_criteria/items/properties/id",
+                  },
+                  "timeout_seconds": {
+                    "maximum": 1800,
+                    "minimum": 1,
+                    "type": "integer",
+                  },
+                },
+                "required": [
+                  "id",
+                  "argv",
+                ],
+                "type": "object",
+              },
+              "maxItems": 256,
+              "type": "array",
+            },
             "forbidden_scope": {
               "items": {
                 "maxLength": 1024,
@@ -198,8 +233,86 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
     "name": "reasonix_delegate",
     "outputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "additionalProperties": true,
-      "properties": {},
+      "additionalProperties": false,
+      "properties": {
+        "branch": {
+          "minLength": 1,
+          "type": "string",
+        },
+        "commit_hash": {
+          "pattern": "^[0-9a-f]{40,64}$",
+          "type": "string",
+        },
+        "contract_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string",
+        },
+        "inspect_required": {
+          "type": "boolean",
+        },
+        "phase": {
+          "type": "string",
+        },
+        "reason": {
+          "type": "string",
+        },
+        "repair_rounds": {
+          "minimum": 0,
+          "type": "integer",
+        },
+        "repository_id": {
+          "minLength": 1,
+          "type": "string",
+        },
+        "resume_required": {
+          "type": "boolean",
+        },
+        "session_id": {
+          "minLength": 1,
+          "type": "string",
+        },
+        "state": {
+          "enum": [
+            "provisioning",
+            "running",
+            "waiting_permission",
+            "waiting_input",
+            "paused",
+            "review_required",
+            "verifying",
+            "completed",
+            "commit_failed",
+            "failed",
+            "cancelled",
+            "closed",
+          ],
+          "type": "string",
+        },
+        "task_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string",
+        },
+        "updated_at": {
+          "minLength": 1,
+          "type": "string",
+        },
+        "worktree": {
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "task_id",
+        "state",
+        "phase",
+        "contract_hash",
+        "repository_id",
+        "branch",
+        "worktree",
+        "repair_rounds",
+        "updated_at",
+      ],
       "type": "object",
     },
   },
@@ -287,8 +400,80 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
     "name": "reasonix_control",
     "outputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "additionalProperties": true,
-      "properties": {},
+      "additionalProperties": false,
+      "properties": {
+        "branch": {
+          "minLength": 1,
+          "type": "string",
+        },
+        "commit_hash": {
+          "pattern": "^[0-9a-f]{40,64}$",
+          "type": "string",
+        },
+        "contract_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string",
+        },
+        "phase": {
+          "type": "string",
+        },
+        "reason": {
+          "type": "string",
+        },
+        "repair_rounds": {
+          "minimum": 0,
+          "type": "integer",
+        },
+        "repository_id": {
+          "minLength": 1,
+          "type": "string",
+        },
+        "session_id": {
+          "minLength": 1,
+          "type": "string",
+        },
+        "state": {
+          "enum": [
+            "provisioning",
+            "running",
+            "waiting_permission",
+            "waiting_input",
+            "paused",
+            "review_required",
+            "verifying",
+            "completed",
+            "commit_failed",
+            "failed",
+            "cancelled",
+            "closed",
+          ],
+          "type": "string",
+        },
+        "task_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string",
+        },
+        "updated_at": {
+          "minLength": 1,
+          "type": "string",
+        },
+        "worktree": {
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "task_id",
+        "state",
+        "phase",
+        "contract_hash",
+        "repository_id",
+        "branch",
+        "worktree",
+        "repair_rounds",
+        "updated_at",
+      ],
       "type": "object",
     },
   },
@@ -346,8 +531,437 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
     "name": "reasonix_inspect",
     "outputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "additionalProperties": true,
-      "properties": {},
+      "additionalProperties": false,
+      "properties": {
+        "next_cursor": {
+          "type": "string",
+        },
+        "sections": {
+          "additionalProperties": false,
+          "properties": {
+            "acceptance_evidence": {
+              "anyOf": [
+                {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "approved": {
+                        "type": "boolean",
+                      },
+                      "criterionId": {
+                        "type": "string",
+                      },
+                      "evidence": {
+                        "enum": [
+                          "automated",
+                          "review",
+                        ],
+                        "type": "string",
+                      },
+                      "sha256": {
+                        "type": "string",
+                      },
+                      "source": {
+                        "type": "string",
+                      },
+                    },
+                    "required": [
+                      "criterionId",
+                      "evidence",
+                      "approved",
+                      "source",
+                    ],
+                    "type": "object",
+                  },
+                  "type": "array",
+                },
+                {
+                  "type": "string",
+                },
+              ],
+            },
+            "changed_files": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string",
+                  },
+                  "type": "array",
+                },
+                {
+                  "type": "string",
+                },
+              ],
+            },
+            "diff": {
+              "type": "string",
+            },
+            "diff_stat": {
+              "type": "string",
+            },
+            "events": {
+              "anyOf": [
+                {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "data": {},
+                      "seq": {
+                        "minimum": 0,
+                        "type": "integer",
+                      },
+                      "timestamp": {
+                        "type": "string",
+                      },
+                      "type": {
+                        "type": "string",
+                      },
+                    },
+                    "required": [
+                      "seq",
+                      "timestamp",
+                      "type",
+                    ],
+                    "type": "object",
+                  },
+                  "type": "array",
+                },
+                {
+                  "type": "string",
+                },
+              ],
+            },
+            "interactions": {
+              "anyOf": [
+                {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "createdAt": {
+                        "type": "string",
+                      },
+                      "id": {
+                        "type": "string",
+                      },
+                      "kind": {
+                        "enum": [
+                          "permission",
+                          "input",
+                        ],
+                        "type": "string",
+                      },
+                      "request": {
+                        "additionalProperties": {},
+                        "type": "object",
+                      },
+                      "resolvedAt": {
+                        "type": "string",
+                      },
+                      "response": {
+                        "additionalProperties": {},
+                        "type": "object",
+                      },
+                      "status": {
+                        "enum": [
+                          "pending",
+                          "resolved",
+                          "cancelled",
+                        ],
+                        "type": "string",
+                      },
+                    },
+                    "required": [
+                      "id",
+                      "kind",
+                      "status",
+                      "createdAt",
+                      "request",
+                    ],
+                    "type": "object",
+                  },
+                  "type": "array",
+                },
+                {
+                  "type": "string",
+                },
+              ],
+            },
+            "risks": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string",
+                  },
+                  "type": "array",
+                },
+                {
+                  "type": "string",
+                },
+              ],
+            },
+            "status": {
+              "anyOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "branch": {
+                      "minLength": 1,
+                      "type": "string",
+                    },
+                    "commit_hash": {
+                      "pattern": "^[0-9a-f]{40,64}$",
+                      "type": "string",
+                    },
+                    "contract_hash": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": "string",
+                    },
+                    "phase": {
+                      "type": "string",
+                    },
+                    "reason": {
+                      "type": "string",
+                    },
+                    "repair_rounds": {
+                      "minimum": 0,
+                      "type": "integer",
+                    },
+                    "repository_id": {
+                      "minLength": 1,
+                      "type": "string",
+                    },
+                    "session_id": {
+                      "minLength": 1,
+                      "type": "string",
+                    },
+                    "state": {
+                      "enum": [
+                        "provisioning",
+                        "running",
+                        "waiting_permission",
+                        "waiting_input",
+                        "paused",
+                        "review_required",
+                        "verifying",
+                        "completed",
+                        "commit_failed",
+                        "failed",
+                        "cancelled",
+                        "closed",
+                      ],
+                      "type": "string",
+                    },
+                    "task_id": {
+                      "$ref": "#/properties/task_id",
+                    },
+                    "updated_at": {
+                      "minLength": 1,
+                      "type": "string",
+                    },
+                    "worktree": {
+                      "minLength": 1,
+                      "type": "string",
+                    },
+                  },
+                  "required": [
+                    "task_id",
+                    "state",
+                    "phase",
+                    "contract_hash",
+                    "repository_id",
+                    "branch",
+                    "worktree",
+                    "repair_rounds",
+                    "updated_at",
+                  ],
+                  "type": "object",
+                },
+                {
+                  "type": "string",
+                },
+              ],
+            },
+            "summary": {
+              "type": "string",
+            },
+            "usage": {
+              "anyOf": [
+                {
+                  "additionalProperties": false,
+                  "properties": {
+                    "cacheHitRatio": {
+                      "anyOf": [
+                        {
+                          "maximum": 1,
+                          "minimum": 0,
+                          "type": "number",
+                        },
+                        {
+                          "type": "null",
+                        },
+                      ],
+                    },
+                    "cacheHitTokens": {
+                      "minimum": 0,
+                      "type": "number",
+                    },
+                    "cacheMissTokens": {
+                      "minimum": 0,
+                      "type": "number",
+                    },
+                    "completionTokens": {
+                      "minimum": 0,
+                      "type": "number",
+                    },
+                    "currency": {
+                      "type": [
+                        "string",
+                        "null",
+                      ],
+                    },
+                    "estimatedCost": {
+                      "anyOf": [
+                        {
+                          "minimum": 0,
+                          "type": "number",
+                        },
+                        {
+                          "type": "null",
+                        },
+                      ],
+                    },
+                    "promptTokens": {
+                      "minimum": 0,
+                      "type": "number",
+                    },
+                    "reasoningTokens": {
+                      "minimum": 0,
+                      "type": "number",
+                    },
+                    "usageSource": {
+                      "type": "string",
+                    },
+                  },
+                  "required": [
+                    "promptTokens",
+                    "completionTokens",
+                    "reasoningTokens",
+                    "cacheHitTokens",
+                    "cacheMissTokens",
+                    "cacheHitRatio",
+                    "estimatedCost",
+                    "currency",
+                    "usageSource",
+                  ],
+                  "type": "object",
+                },
+                {
+                  "type": "string",
+                },
+              ],
+            },
+            "verification": {
+              "anyOf": [
+                {
+                  "items": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "argv": {
+                        "items": {
+                          "type": "string",
+                        },
+                        "type": "array",
+                      },
+                      "cwd": {
+                        "type": "string",
+                      },
+                      "exitCode": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                          },
+                          {
+                            "type": "null",
+                          },
+                        ],
+                      },
+                      "finishedAt": {
+                        "type": "string",
+                      },
+                      "id": {
+                        "type": "string",
+                      },
+                      "logPath": {
+                        "type": "string",
+                      },
+                      "outputBytes": {
+                        "minimum": 0,
+                        "type": "integer",
+                      },
+                      "passed": {
+                        "type": "boolean",
+                      },
+                      "proves": {
+                        "items": {
+                          "type": "string",
+                        },
+                        "type": "array",
+                      },
+                      "sha256": {
+                        "type": "string",
+                      },
+                      "startedAt": {
+                        "type": "string",
+                      },
+                      "timedOut": {
+                        "type": "boolean",
+                      },
+                    },
+                    "required": [
+                      "id",
+                      "argv",
+                      "cwd",
+                      "startedAt",
+                      "finishedAt",
+                      "exitCode",
+                      "timedOut",
+                      "passed",
+                      "proves",
+                      "logPath",
+                      "sha256",
+                      "outputBytes",
+                    ],
+                    "type": "object",
+                  },
+                  "type": "array",
+                },
+                {
+                  "type": "string",
+                },
+              ],
+            },
+          },
+          "type": "object",
+        },
+        "task_id": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string",
+        },
+        "truncated": {
+          "type": "boolean",
+        },
+        "updated_at": {
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "task_id",
+        "sections",
+        "truncated",
+        "updated_at",
+      ],
       "type": "object",
     },
   },

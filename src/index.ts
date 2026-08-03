@@ -4,12 +4,14 @@ import process from 'node:process';
 
 import { isCliEntrypoint } from './cli-entrypoint.js';
 import { loadConfig } from './config.js';
+import { runContractLintCli } from './contract-lint.js';
 import { runDoctor } from './doctor.js';
 import { BridgeRuntime } from './runtime.js';
 import { serveStdio } from './server.js';
 import { VERSION } from './version.js';
 
 export * from './config.js';
+export * from './contract-lint.js';
 export * from './contracts.js';
 export * from './runtime.js';
 export * from './server.js';
@@ -27,8 +29,15 @@ async function main(): Promise<void> {
     if (!report.ok) process.exitCode = 1;
     return;
   }
+  if (command === 'contract') {
+    const result = await runContractLintCli(process.argv.slice(3));
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) process.stderr.write(result.stderr);
+    process.exitCode = result.exitCode;
+    return;
+  }
   if (command !== 'serve') {
-    process.stderr.write('Usage: codex-reasonix-mcp [serve|doctor|version]\n');
+    process.stderr.write('Usage: codex-reasonix-mcp [serve|doctor|version|contract lint]\n');
     process.exitCode = 2;
     return;
   }

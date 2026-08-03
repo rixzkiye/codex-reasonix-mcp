@@ -6,6 +6,8 @@ import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { isCliEntrypoint } from '../../src/cli-entrypoint.js';
+import { runContractLintCli } from '../../src/contract-lint.js';
+import { contractFixture } from '../helpers.js';
 
 describe('CLI entrypoint detection', () => {
   it('recognizes direct and package-bin symlink invocation paths', async () => {
@@ -38,5 +40,54 @@ describe('CLI entrypoint detection', () => {
     expect(isCliEntrypoint(moduleUrl, undefined)).toBe(false);
     expect(isCliEntrypoint(moduleUrl, otherPath)).toBe(false);
     expect(isCliEntrypoint(moduleUrl, path.join(root, 'missing.js'))).toBe(false);
+  });
+});
+
+describe('contract lint CLI', () => {
+  it('lints a contract from a file', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'reasonix-contract-lint-'));
+    const file = path.join(root, 'contract.json');
+    await writeFile(file, `${JSON.stringify(contractFixture())}\n`);
+
+    const result = await runContractLintCli(['lint', '--file', file]);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain(`${file}: valid TaskContractV1`);
+    expect(result.stdout).toMatch(/sha256 [0-9a-f]{64}/);
+    expect(result.stderr).toBe('');
+  });
+
+  it('reports every lint issue from stdin in one response', async () => {
+    const fixture = contractFixture();
+    const result = await runContractLintCli(['lint', '--stdin'], {
+      readStdin: () =>
+        Promise.resolve(
+          JSON.stringify({
+            ...fixture,
+            verified_context: [{ path: '/absolute', reason: 'invalid' }],
+            write_scope: ['../escape'],
+            verification: [{ ...fixture.verification[0], cwd: '../escape', proves: ['missing'] }],
+          }),
+        ),
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toContain('<stdin>: invalid TaskContractV1 (5 issues)');
+    expect(result.stderr).toContain('- verified_context.0.path:');
+    expect(result.stderr).toContain('- write_scope.0:');
+    expect(result.stderr).toContain('- verification.0.cwd:');
+    expect(result.stderr).toContain('- verification.0.proves.0:');
+    expect(result.stderr).toContain('- verification:');
+  });
+
+  it.each([
+    ['requires a source', ['lint']],
+    ['rejects both sources', ['lint', '--stdin', '--file', 'contract.json']],
+    ['rejects unknown flags', ['lint', '--wat']],
+  ])('%s', async (_name, args) => {
+    const result = await runContractLintCli(args);
+    expect(result.exitCode).toBe(2);
+    expect(result.stderr).toContain('Usage: codex-reasonix-mcp contract lint');
   });
 });

@@ -1,8 +1,13 @@
 import { z } from 'zod';
 
-import { taskContractSchema, verificationCommandSchema } from './contracts.js';
-import { BridgeError } from './errors.js';
+import {
+  allowedCommandSchema,
+  taskContractSchema,
+  verificationCommandSchema,
+} from './contracts.js';
+import { BRIDGE_ERROR_CODES, BridgeError, NEXT_ACTIONS } from './errors.js';
 import { INSPECT_SECTIONS } from './runtime.js';
+import { TASK_STATUSES } from './types.js';
 
 const taskIdSchema = z.string().min(1).max(64);
 
@@ -12,8 +17,13 @@ const verificationCommandWireSchema = verificationCommandSchema.extend({
   argv: z.array(z.string().max(4_096)).min(1).max(128),
 });
 
+const allowedCommandWireSchema = allowedCommandSchema.extend({
+  argv: z.array(z.string().max(4_096)).min(1).max(128),
+});
+
 const taskContractWireSchema = taskContractSchema.extend({
   verification: z.array(verificationCommandWireSchema).max(256),
+  allowed_commands: z.array(allowedCommandWireSchema).max(256).optional(),
 });
 
 export const delegateInputSchema = z
@@ -137,4 +147,135 @@ export const inspectInputSchema = z
   })
   .strict();
 
-export const toolOutputSchema = z.object({}).passthrough();
+const taskViewSchema = z
+  .object({
+    task_id: taskIdSchema,
+    state: z.enum(TASK_STATUSES),
+    phase: z.string(),
+    contract_hash: z.string().regex(/^[0-9a-f]{64}$/),
+    repository_id: z.string().min(1),
+    branch: z.string().min(1),
+    worktree: z.string().min(1),
+    session_id: z.string().min(1).optional(),
+    repair_rounds: z.number().int().min(0),
+    updated_at: z.string().min(1),
+    reason: z.string().optional(),
+    commit_hash: z
+      .string()
+      .regex(/^[0-9a-f]{40,64}$/)
+      .optional(),
+  })
+  .strict();
+
+export const delegateOutputSchema = taskViewSchema.extend({
+  resume_required: z.boolean().optional(),
+  inspect_required: z.boolean().optional(),
+});
+
+export const controlOutputSchema = taskViewSchema;
+
+const verificationEvidenceSchema = z
+  .object({
+    id: z.string(),
+    argv: z.array(z.string()),
+    cwd: z.string(),
+    startedAt: z.string(),
+    finishedAt: z.string(),
+    exitCode: z.number().int().nullable(),
+    timedOut: z.boolean(),
+    passed: z.boolean(),
+    proves: z.array(z.string()),
+    logPath: z.string(),
+    sha256: z.string(),
+    outputBytes: z.number().int().min(0),
+  })
+  .strict();
+
+const acceptanceEvidenceSchema = z
+  .object({
+    criterionId: z.string(),
+    evidence: z.enum(['automated', 'review']),
+    approved: z.boolean(),
+    source: z.string(),
+    sha256: z.string().optional(),
+  })
+  .strict();
+
+const usageSchema = z
+  .object({
+    promptTokens: z.number().min(0),
+    completionTokens: z.number().min(0),
+    reasoningTokens: z.number().min(0),
+    cacheHitTokens: z.number().min(0),
+    cacheMissTokens: z.number().min(0),
+    cacheHitRatio: z.number().min(0).max(1).nullable(),
+    estimatedCost: z.number().min(0).nullable(),
+    currency: z.string().nullable(),
+    usageSource: z.string(),
+  })
+  .strict();
+
+const interactionSchema = z
+  .object({
+    id: z.string(),
+    kind: z.enum(['permission', 'input']),
+    status: z.enum(['pending', 'resolved', 'cancelled']),
+    createdAt: z.string(),
+    resolvedAt: z.string().optional(),
+    request: z.record(z.unknown()),
+    response: z.record(z.unknown()).optional(),
+  })
+  .strict();
+
+const journalEventSchema = z
+  .object({
+    seq: z.number().int().min(0),
+    timestamp: z.string(),
+    type: z.string(),
+    data: z.unknown(),
+  })
+  .strict();
+
+function paged<T extends z.ZodTypeAny>(schema: T): z.ZodUnion<[T, z.ZodString]> {
+  return z.union([schema, z.string()]);
+}
+
+const inspectSectionsSchema = z
+  .object({
+    status: paged(taskViewSchema).optional(),
+    summary: z.string().optional(),
+    changed_files: paged(z.array(z.string())).optional(),
+    diff_stat: z.string().optional(),
+    diff: z.string().optional(),
+    verification: paged(z.array(verificationEvidenceSchema)).optional(),
+    acceptance_evidence: paged(z.array(acceptanceEvidenceSchema)).optional(),
+    risks: paged(z.array(z.string())).optional(),
+    usage: paged(usageSchema).optional(),
+    interactions: paged(z.array(interactionSchema)).optional(),
+    events: paged(z.array(journalEventSchema)).optional(),
+  })
+  .strict();
+
+export const inspectOutputSchema = z
+  .object({
+    task_id: taskIdSchema,
+    sections: inspectSectionsSchema,
+    truncated: z.boolean(),
+    next_cursor: z.string().optional(),
+    updated_at: z.string().min(1),
+  })
+  .strict();
+
+export const toolErrorEnvelopeSchema = z
+  .object({
+    error: z
+      .object({
+        code: z.enum(BRIDGE_ERROR_CODES),
+        message: z.string(),
+        retryable: z.boolean(),
+        next_action: z.enum(NEXT_ACTIONS),
+        details: z.record(z.unknown()).optional(),
+      })
+      .strict(),
+  })
+  .strict();

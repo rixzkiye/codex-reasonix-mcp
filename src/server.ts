@@ -3,15 +3,18 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
 import type { ServerNotification, ServerRequest } from '@modelcontextprotocol/sdk/types.js';
 
-import { asBridgeError } from './errors.js';
+import { errorEnvelope } from './errors.js';
 import type { BridgeRuntime } from './runtime.js';
 import { SANDBOX_META_KEY } from './sandbox.js';
 import {
   controlInputSchema,
+  controlOutputSchema,
   delegateInputSchema,
+  delegateOutputSchema,
   inspectInputSchema,
+  inspectOutputSchema,
   parseControlInput,
-  toolOutputSchema,
+  toolErrorEnvelopeSchema,
 } from './tool-schemas.js';
 import { VERSION } from './version.js';
 
@@ -25,14 +28,9 @@ function success(value: Record<string, unknown>) {
 }
 
 function failure(error: unknown) {
-  const bridgeError = asBridgeError(error);
-  const value = {
-    error: {
-      code: bridgeError.code,
-      message: bridgeError.message,
-      ...(bridgeError.details ? { details: bridgeError.details } : {}),
-    },
-  };
+  const value = toolErrorEnvelopeSchema.parse({
+    error: errorEnvelope(error),
+  });
   return {
     isError: true,
     content: [{ type: 'text' as const, text: JSON.stringify(value) }],
@@ -58,12 +56,17 @@ export function createMcpServer(runtime: BridgeRuntime): McpServer {
       description:
         'Use only after explicit user request or approval for Reasonix implementation requiring an immutable TaskContractV1, isolated worktree/session, asynchronous execution, and supervised finalization. Never substitute native Codex subagents for approved Reasonix work; use native subagents for bounded parallel exploration, tests, triage, or summaries.',
       inputSchema: delegateInputSchema,
-      outputSchema: toolOutputSchema,
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
+      outputSchema: delegateOutputSchema,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
     },
     async (args, extra: Extra) => {
       try {
-        return success(await runtime.delegate(args, extra._meta));
+        return success(delegateOutputSchema.parse(await runtime.delegate(args, extra._meta)));
       } catch (error) {
         return failure(error);
       }
@@ -77,12 +80,19 @@ export function createMcpServer(runtime: BridgeRuntime): McpServer {
       description:
         'Use only for a Reasonix task created by reasonix_delegate: steer, resolve an interaction, cancel, asynchronously finalize, or close it.',
       inputSchema: controlInputSchema,
-      outputSchema: toolOutputSchema,
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+      outputSchema: controlOutputSchema,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
     },
     async (args, extra: Extra) => {
       try {
-        return success(await runtime.control(parseControlInput(args), extra._meta));
+        return success(
+          controlOutputSchema.parse(await runtime.control(parseControlInput(args), extra._meta)),
+        );
       } catch (error) {
         return failure(error);
       }
@@ -96,12 +106,17 @@ export function createMcpServer(runtime: BridgeRuntime): McpServer {
       description:
         'Use for a Reasonix task to read bounded status, evidence, interactions, events, and optionally paginated diff output.',
       inputSchema: inspectInputSchema,
-      outputSchema: toolOutputSchema,
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+      outputSchema: inspectOutputSchema,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
     },
     async (args) => {
       try {
-        return success(await runtime.inspect(args));
+        return success(inspectOutputSchema.parse(await runtime.inspect(args)));
       } catch (error) {
         return failure(error);
       }

@@ -31,6 +31,18 @@ export const verificationCommandSchema = z
   })
   .strict();
 
+export const allowedCommandSchema = z
+  .object({
+    id: idSchema,
+    argv: z
+      .tuple([z.string().min(1).max(4_096)])
+      .rest(z.string().max(4_096))
+      .refine((value) => value.length <= 128),
+    cwd: z.string().max(1_024).optional(),
+    timeout_seconds: z.number().int().min(1).max(1_800).optional(),
+  })
+  .strict();
+
 export const taskContractSchema = z
   .object({
     schema_version: z.literal(1),
@@ -45,12 +57,19 @@ export const taskContractSchema = z
     non_goals: z.array(textSchema).max(1_000),
     acceptance_criteria: z.array(acceptanceCriterionSchema).min(1).max(1_000),
     verification: z.array(verificationCommandSchema).max(256),
+    allowed_commands: z.array(allowedCommandSchema).max(256).optional(),
     pause_conditions: z.array(textSchema).max(1_000),
   })
   .strict();
 
 export type TaskContractV1 = z.infer<typeof taskContractSchema>;
 export type VerificationCommand = z.infer<typeof verificationCommandSchema>;
+export type AllowedCommand = z.infer<typeof allowedCommandSchema>;
+
+export interface ContractLintIssue {
+  path: string;
+  message: string;
+}
 
 function normalizeRelative(value: string, allowDot: boolean, field: string): string {
   const trimmed = value.trim();
@@ -86,8 +105,8 @@ export function normalizeRepositoryPath(value: string, field = 'path'): string {
   return normalizeRelative(value, false, field);
 }
 
-export function normalizeRepositoryCwd(value = '.'): string {
-  return normalizeRelative(value, true, 'verification.cwd');
+export function normalizeRepositoryCwd(value = '.', field = 'verification.cwd'): string {
+  return normalizeRelative(value, true, field);
 }
 
 function uniqueIds(values: Array<{ id: string }>, field: string): void {
@@ -128,10 +147,26 @@ export function parseTaskContract(input: unknown): TaskContractV1 {
       cwd: normalizeRepositoryCwd(item.cwd),
       timeout_seconds: item.timeout_seconds ?? 600,
     })),
+    ...(parsed.data.allowed_commands
+      ? {
+          allowed_commands: parsed.data.allowed_commands.map((item) => ({
+            ...item,
+            cwd: normalizeRepositoryCwd(item.cwd, 'allowed_commands.cwd'),
+            timeout_seconds: item.timeout_seconds ?? 120,
+          })),
+        }
+      : {}),
   };
 
   uniqueIds(contract.acceptance_criteria, 'acceptance_criteria');
   uniqueIds(contract.verification, 'verification');
+  if (contract.allowed_commands) {
+    uniqueIds(contract.allowed_commands, 'allowed_commands');
+    uniqueIds(
+      [...contract.verification, ...contract.allowed_commands],
+      'verification and allowed_commands',
+    );
+  }
   const automated = new Set(
     contract.acceptance_criteria
       .filter((item) => item.evidence === 'automated')
@@ -157,6 +192,136 @@ export function parseTaskContract(input: unknown): TaskContractV1 {
     });
   }
   return contract;
+}
+
+function zodIssues(error: z.ZodError): ContractLintIssue[] {
+  return error.issues.map((issue) => ({
+    path: issue.path.length > 0 ? issue.path.join('.') : '$',
+    message: issue.message,
+  }));
+}
+
+function lintDuplicateIds(
+  values: Array<{ id: string }>,
+  field: string,
+  issues: ContractLintIssue[],
+): void {
+  const seen = new Set<string>();
+  values.forEach((value, index) => {
+    if (seen.has(value.id)) {
+      issues.push({ path: `${field}.${index}.id`, message: `Duplicate id: ${value.id}` });
+    }
+    seen.add(value.id);
+  });
+}
+
+function lintPath(
+  value: string | undefined,
+  allowDot: boolean,
+  field: string,
+  issues: ContractLintIssue[],
+): void {
+  try {
+    normalizeRelative(value ?? '.', allowDot, field);
+  } catch (error) {
+    issues.push({
+      path: field,
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+/** Returns every schema and semantic contract problem that can be evaluated safely. */
+export function lintTaskContract(input: unknown): ContractLintIssue[] {
+  const parsed = taskContractSchema.safeParse(input);
+  if (!parsed.success) return zodIssues(parsed.error);
+
+  const contract = parsed.data;
+  const issues: ContractLintIssue[] = [];
+  contract.verified_context.forEach((item, index) =>
+    lintPath(item.path, false, `verified_context.${index}.path`, issues),
+  );
+  contract.write_scope.forEach((item, index) =>
+    lintPath(item, false, `write_scope.${index}`, issues),
+  );
+  contract.forbidden_scope.forEach((item, index) =>
+    lintPath(item, false, `forbidden_scope.${index}`, issues),
+  );
+  contract.verification.forEach((item, index) =>
+    lintPath(item.cwd, true, `verification.${index}.cwd`, issues),
+  );
+  contract.allowed_commands?.forEach((item, index) =>
+    lintPath(item.cwd, true, `allowed_commands.${index}.cwd`, issues),
+  );
+
+  lintDuplicateIds(contract.acceptance_criteria, 'acceptance_criteria', issues);
+  lintDuplicateIds(contract.verification, 'verification', issues);
+  if (contract.allowed_commands) {
+    lintDuplicateIds(contract.allowed_commands, 'allowed_commands', issues);
+    const verificationIds = new Set(contract.verification.map((command) => command.id));
+    contract.allowed_commands.forEach((command, index) => {
+      if (verificationIds.has(command.id)) {
+        issues.push({
+          path: `allowed_commands.${index}.id`,
+          message: `Duplicate verification command id: ${command.id}`,
+        });
+      }
+    });
+  }
+
+  const criteria = new Set(contract.acceptance_criteria.map((item) => item.id));
+  const automated = new Set(
+    contract.acceptance_criteria
+      .filter((item) => item.evidence === 'automated')
+      .map((item) => item.id),
+  );
+  const proved = new Set<string>();
+  contract.verification.forEach((verification, verificationIndex) => {
+    verification.proves.forEach((criterion, provesIndex) => {
+      if (!criteria.has(criterion)) {
+        issues.push({
+          path: `verification.${verificationIndex}.proves.${provesIndex}`,
+          message: `Unknown acceptance criterion: ${criterion}`,
+        });
+      } else {
+        proved.add(criterion);
+      }
+    });
+  });
+  for (const criterion of automated) {
+    if (!proved.has(criterion)) {
+      issues.push({
+        path: 'verification',
+        message: `Automated acceptance criterion lacks verification: ${criterion}`,
+      });
+    }
+  }
+  return issues;
+}
+
+/** Verification commands are always allowed, but only they can prove automated acceptance. */
+export function contractAllowedCommands(contract: TaskContractV1): AllowedCommand[] {
+  const verification = contract.verification.map((command) => ({
+    id: command.id,
+    argv: command.argv,
+    cwd: command.cwd,
+    timeout_seconds: command.timeout_seconds,
+  }));
+  return [...verification, ...(contract.allowed_commands ?? [])];
+}
+
+export function isCommandAllowedByContract(
+  contract: TaskContractV1,
+  argv: readonly string[],
+  cwd = '.',
+): boolean {
+  const normalizedCwd = normalizeRepositoryCwd(cwd, 'command.cwd');
+  return contractAllowedCommands(contract).some(
+    (command) =>
+      command.cwd === normalizedCwd &&
+      command.argv.length === argv.length &&
+      command.argv.every((argument, index) => argument === argv[index]),
+  );
 }
 
 function canonicalize(value: unknown): unknown {
@@ -297,6 +462,12 @@ export function renderGoalPrompt(taskId: string, contract: TaskContractV1, hash:
     ...contract.verification.map(
       (item) =>
         `- [${item.id}] cwd=${item.cwd ?? '.'} timeout=${item.timeout_seconds ?? 600}s argv=${JSON.stringify(item.argv)} proves=${item.proves.join(',')}`,
+    ),
+    '',
+    'Other allowed commands (exact argv; never automated acceptance evidence):',
+    ...(contract.allowed_commands ?? []).map(
+      (item) =>
+        `- [${item.id}] cwd=${item.cwd ?? '.'} timeout=${item.timeout_seconds ?? 120}s argv=${JSON.stringify(item.argv)}`,
     ),
     '',
     'Pause conditions:',

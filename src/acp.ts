@@ -82,7 +82,7 @@ function desiredModel(options: SessionConfigOption[], model: string): string {
   );
   if (!match) {
     throw new BridgeError(
-      'reasonix_unavailable',
+      'reasonix_incompatible',
       `Required Reasonix model is unavailable: ${model}`,
       {
         available: values.map((item) => item.value),
