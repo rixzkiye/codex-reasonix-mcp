@@ -31,6 +31,7 @@ const expected = {
   commit_failed: [false, 'repair_and_finalize'],
   lease_conflict: [true, 'retry'],
   output_limit_exceeded: [false, 'inspect_task'],
+  sandbox_unavailable: [false, 'install_or_upgrade'],
   internal_error: [false, 'none'],
 } as const satisfies Record<BridgeErrorCode, readonly [boolean, NextAction]>;
 

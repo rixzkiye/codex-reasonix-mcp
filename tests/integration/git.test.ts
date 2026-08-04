@@ -251,6 +251,7 @@ describe('isolated Git finalization', () => {
         'hook-failure: should not commit',
         await resolveGitIdentity(repository),
         'refs/heads/reasonix/hook-failure',
+        { runGitHooks: true, repositoryRoot: repository.root },
       ),
     ).rejects.toMatchObject({ code: 'commit_failed' });
     const head = await runCommand({ argv: ['git', 'rev-parse', 'HEAD'], cwd: isolated.worktree });
@@ -271,11 +272,7 @@ describe('isolated Git finalization', () => {
     const hooks = path.join(repository.commonDir, 'hooks');
     await mkdir(hooks, { recursive: true });
     const hook = path.join(hooks, 'pre-commit');
-    await writeFile(
-      hook,
-      '#!/bin/sh\nprintf "hook mutation\\n" > result.txt\ngit add -- result.txt\nexit 0\n',
-      'utf8',
-    );
+    await writeFile(hook, '#!/bin/sh\nprintf "hook mutation\\n" > result.txt\nexit 0\n', 'utf8');
     await chmod(hook, 0o755);
 
     await expect(
@@ -285,6 +282,7 @@ describe('isolated Git finalization', () => {
         'hook-mutation: reject mutation',
         await resolveGitIdentity(repository),
         'refs/heads/reasonix/hook-mutation',
+        { runGitHooks: true, repositoryRoot: repository.root },
       ),
     ).rejects.toMatchObject({ code: 'ownership_ambiguous' });
     const head = await runCommand({ argv: ['git', 'rev-parse', 'HEAD'], cwd: isolated.worktree });

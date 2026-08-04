@@ -21,6 +21,7 @@ import { containsSecret } from './redaction.js';
 import { isRuntimeMetadataPath } from './runtime-metadata.js';
 import { runChecked, runCommand, type CommandResult } from './command.js';
 import { isCredentialPath, isGitControlPath } from './sensitive-paths.js';
+import { runSandboxed } from './sandbox-runner.js';
 import type { RepositoryIdentity } from './types.js';
 
 async function git(
@@ -602,12 +603,22 @@ export async function assertStagedChecks(worktree: string): Promise<void> {
   }
 }
 
+export interface AtomicCommitOptions {
+  /** Run repository Git hooks (pre-commit/prepare-commit-msg/commit-msg). Default: off. */
+  runGitHooks?: boolean;
+  /** Source repository root, bound read-only into the hook sandbox. */
+  repositoryRoot?: string;
+  /** Escape hatch: run hooks without an OS sandbox when none is available. */
+  allowUnsandboxed?: boolean;
+}
+
 export async function createAtomicCommit(
   worktree: string,
   baseCommit: string,
   message: string,
   identity: GitIdentity,
   expectedBranch: string,
+  options: AtomicCommitOptions = {},
 ): Promise<string> {
   const before = (await gitChecked(worktree, ['rev-parse', 'HEAD'])).stdout.trim();
   if (before !== baseCommit) {
@@ -668,25 +679,33 @@ export async function createAtomicCommit(
       throw new BridgeError('ownership_ambiguous', 'Temporary and reviewed indexes differ');
     }
 
-    for (const hook of [
-      { name: 'pre-commit', args: [] },
-      { name: 'prepare-commit-msg', args: [messagePath, 'message'] },
-      { name: 'commit-msg', args: [messagePath] },
-    ]) {
-      const result = await git(
-        worktree,
-        ['hook', 'run', '--ignore-missing', hook.name, '--', ...hook.args],
-        5 * 60_000,
-        2 * 1024 * 1024,
-        hookEnvironment,
-      );
-      if (result.exitCode !== 0 || result.timedOut || result.outputTruncated) {
-        throw new BridgeError('commit_failed', `Git ${hook.name} hook failed`, {
-          exitCode: result.exitCode,
-          timedOut: result.timedOut,
-          stdout: result.stdout.slice(0, 16_384),
-          stderr: result.stderr.slice(0, 16_384),
-        });
+    if (options.runGitHooks) {
+      for (const hook of [
+        { name: 'pre-commit', args: [] },
+        { name: 'prepare-commit-msg', args: [messagePath, 'message'] },
+        { name: 'commit-msg', args: [messagePath] },
+      ]) {
+        const result = await runSandboxed(
+          {
+            worktree,
+            repositoryRoot: options.repositoryRoot,
+            readOnlyPaths: [transactionDir],
+            argv: ['git', 'hook', 'run', '--ignore-missing', hook.name, '--', ...hook.args],
+            cwd: worktree,
+            timeoutMs: 5 * 60_000,
+            maxOutputBytes: 2 * 1024 * 1024,
+            env: hookEnvironment,
+          },
+          options.allowUnsandboxed ?? false,
+        );
+        if (result.exitCode !== 0 || result.timedOut || result.outputTruncated) {
+          throw new BridgeError('commit_failed', `Git ${hook.name} hook failed`, {
+            exitCode: result.exitCode,
+            timedOut: result.timedOut,
+            stdout: result.stdout.slice(0, 16_384),
+            stderr: result.stderr.slice(0, 16_384),
+          });
+        }
       }
     }
 

@@ -3,10 +3,10 @@ import { lstat, readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import type { BridgeConfig } from './config.js';
-import { runCommand } from './command.js';
 import { BridgeError } from './errors.js';
 import { containsSecret } from './redaction.js';
 import { git } from './repository.js';
+import { runSandboxed } from './sandbox-runner.js';
 import { isCredentialPath } from './sensitive-paths.js';
 const ASSIGNMENT =
   /(?:api[_-]?key|access[_-]?token|client[_-]?secret|password|passwd)\s*[:=]\s*["']?([^\s"']{12,})/gi;
@@ -50,13 +50,17 @@ export async function scanWorkingFiles(
   }
   if (config.externalSecretScanner) {
     const [command, ...args] = config.externalSecretScanner;
-    const result = await runCommand({
-      argv: [command, ...args, ...files],
-      cwd: worktree,
-      timeoutMs: 5 * 60_000,
-      maxOutputBytes: 1024 * 1024,
-      signal,
-    });
+    const result = await runSandboxed(
+      {
+        worktree,
+        argv: [command, ...args, ...files],
+        cwd: worktree,
+        timeoutMs: 5 * 60_000,
+        maxOutputBytes: 1024 * 1024,
+        signal,
+      },
+      config.allowUnsandboxed,
+    );
     if (result.exitCode !== 0) {
       throw new BridgeError(
         'secret_detected',

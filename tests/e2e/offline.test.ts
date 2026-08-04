@@ -434,7 +434,7 @@ describe('offline Codex -> Reasonix -> Codex flow', () => {
 
   it('uses commit_failed only after the commit transaction starts', async () => {
     const repository = await createGitRepository();
-    const runtime = await runtimeFixture();
+    const runtime = await runtimeFixture({ runGitHooks: true });
     await runtime.delegate(
       { task_id: 'commit-hook-failure', contract: contractFixture() },
       sandboxMeta(repository),
@@ -830,7 +830,7 @@ describe('offline Codex -> Reasonix -> Codex flow', () => {
     const repository = await createGitRepository();
     const runtime = await runtimeFixture();
     const descendantMarker = path.join(repository, 'cancelled-descendant-survived');
-    const descendant = `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(descendantMarker)}, 'unsafe'), 700)`;
+    const descendant = `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(descendantMarker)}, 'unsafe'), 2500)`;
     const slowVerification = [
       "const {spawn}=require('node:child_process')",
       `spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:'ignore'})`,
@@ -874,7 +874,9 @@ describe('offline Codex -> Reasonix -> Codex flow', () => {
       undefined,
     );
     expect(cancelled.state).toBe('cancelled');
-    await new Promise((resolve) => setTimeout(resolve, 900));
+    // Longer than the descendant's 2500ms marker timer: if the descendant
+    // survived the cancellation, the marker would already exist by now.
+    await new Promise((resolve) => setTimeout(resolve, 3_200));
     const task = await runtime.store.loadTask('cancel-verification');
     expect(task.status).toBe('cancelled');
     expect(task.commitHash).toBeUndefined();

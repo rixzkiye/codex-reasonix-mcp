@@ -23,6 +23,9 @@ jobs:
             node: 22
     steps:
       - uses: actions/checkout@v7
+      - name: Install bubblewrap (command sandbox)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
       - name: Install pnpm
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:

@@ -92,6 +92,8 @@ export async function runCommand(options: CommandOptions): Promise<CommandResult
     let outputTruncated = false;
     let timedOut = false;
     let killTimer: NodeJS.Timeout | undefined;
+    let closeBackstop: NodeJS.Timeout | undefined;
+    let settled = false;
     let terminationStarted = false;
 
     const capture = (target: Buffer[], chunk: Buffer, stream: 'stdout' | 'stderr'): void => {
@@ -110,9 +112,10 @@ export async function runCommand(options: CommandOptions): Promise<CommandResult
       if (process.platform !== 'win32' && child.pid !== undefined) {
         try {
           process.kill(-child.pid, signal);
-          return;
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === 'ESRCH') return;
+        } catch {
+          // The process group may not exist (e.g. the child never became a
+          // group leader). Fall through to a direct kill of the child PID so
+          // an abort, timeout, or cleanup can never silently miss the child.
         }
       }
       if (child.exitCode !== null || child.signalCode !== null) return;
@@ -122,7 +125,31 @@ export async function runCommand(options: CommandOptions): Promise<CommandResult
       if (terminationStarted) return;
       terminationStarted = true;
       signalTree('SIGTERM');
-      killTimer = setTimeout(() => signalTree('SIGKILL'), 2_000);
+      killTimer = setTimeout(() => {
+        signalTree('SIGKILL');
+        // Final backstop: if the child cannot be reaped (e.g. a sandbox
+        // launcher escaped its expected pid/group and still holds the stdio
+        // pipes), never hang the bridge waiting for 'close'. Resolve as a
+        // killed command; callers fail closed on the non-zero outcome.
+        closeBackstop = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          options.signal?.removeEventListener('abort', abort);
+          resolve({
+            argv: [...options.argv],
+            cwd: options.cwd,
+            exitCode: null,
+            signal: 'SIGKILL',
+            stdout: Buffer.concat(stdout).toString('utf8'),
+            stderr: Buffer.concat(stderr).toString('utf8'),
+            durationMs: Date.now() - started,
+            timedOut,
+            outputTruncated,
+          });
+        }, 3_000);
+        closeBackstop.unref();
+      }, 2_000);
       killTimer.unref();
     };
     const timer = setTimeout(() => {
@@ -138,15 +165,19 @@ export async function runCommand(options: CommandOptions): Promise<CommandResult
     child.once('error', (error) => {
       clearTimeout(timer);
       if (killTimer) clearTimeout(killTimer);
+      if (closeBackstop) clearTimeout(closeBackstop);
       options.signal?.removeEventListener('abort', abort);
       reject(error);
     });
     child.once('close', (exitCode, signal) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
       // A foreground command is not allowed to leak background descendants.
       // The detached process-group ID remains addressable after its leader exits.
       signalTree('SIGKILL');
       if (killTimer) clearTimeout(killTimer);
+      if (closeBackstop) clearTimeout(closeBackstop);
       options.signal?.removeEventListener('abort', abort);
       resolve({
         argv: [...options.argv],
