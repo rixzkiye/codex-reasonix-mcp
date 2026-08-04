@@ -8,7 +8,7 @@ import { ReasonixPool, type ReasonixCallbacks, type ReasonixProcess } from '../a
 import type { BridgeConfig } from '../config.js';
 import { renderFastPrompt, renderGoalPrompt } from '../contracts.js';
 import { BridgeError, asBridgeError } from '../errors.js';
-import { canTransition, transitionTask } from '../lifecycle.js';
+import { canTransition, enterPaused, transitionTask } from '../lifecycle.js';
 import type { ReasonixStatus, ReasonixStatusUpdate } from '../reasonix-status.js';
 import { redact, redactString } from '../redaction.js';
 import { canonicalWorktreeTree, createIsolatedWorktree } from '../repository.js';
@@ -361,8 +361,7 @@ export class SessionSupervisor implements SessionAccess {
         task.summary = update.status.finalReadiness.summary || task.summary;
         task.risks = [...update.status.finalReadiness.risks];
         if (update.event === 'pause' && canTransition(task.status, 'paused')) {
-          transitionTask(task, 'paused', update.status.phase, update.status.turnOutcome.reason);
-          task.inspectedAfterPause = false;
+          enterPaused(task, update.status.phase, update.status.turnOutcome.reason);
         }
       },
     );
@@ -496,13 +495,7 @@ export class SessionSupervisor implements SessionAccess {
           }
           release = true;
         } else if (canTransition(task.status, 'paused')) {
-          transitionTask(
-            task,
-            'paused',
-            status.phase,
-            status.turnOutcome.reason ?? 'Goal is not review-ready',
-          );
-          task.inspectedAfterPause = false;
+          enterPaused(task, status.phase, status.turnOutcome.reason ?? 'Goal is not review-ready');
         }
       },
     );
@@ -523,13 +516,7 @@ export class SessionSupervisor implements SessionAccess {
         { error: String(error) },
         (task) => {
           if (!TERMINAL_STATUSES.has(task.status) && canTransition(task.status, 'paused')) {
-            transitionTask(
-              task,
-              'paused',
-              'worker_crashed',
-              'Reasonix process exited; inspect before resume',
-            );
-            task.inspectedAfterPause = false;
+            enterPaused(task, 'worker_crashed', 'Reasonix process exited; inspect before resume');
           }
         },
       );

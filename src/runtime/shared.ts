@@ -34,6 +34,9 @@ export function taskView(task: TaskRecord): Record<string, unknown> {
     session_id: task.acpSessionId,
     repair_rounds: task.repairRounds,
     review_revision: task.reviewRevision,
+    ...(task.reviewTreeHash ? { review_tree_hash: task.reviewTreeHash } : {}),
+    pause_revision: task.pauseRevision ?? 0,
+    ...(task.pauseReasonHash ? { pause_reason_hash: task.pauseReasonHash } : {}),
     ...(task.reasonixWorkMode ? { reasonix_work_mode: task.reasonixWorkMode } : {}),
     ...(task.reasonixSessionMode ? { reasonix_session_mode: task.reasonixSessionMode } : {}),
     updated_at: task.updatedAt,
@@ -91,7 +94,18 @@ export async function waitForTask(
 }
 
 export function statusToUsage(status: ReasonixStatus): TaskRecord['usage'] {
-  return { ...status.usage.cumulative };
+  const usage = status.usage.cumulative;
+  return {
+    promptTokens: usage.promptTokens,
+    completionTokens: usage.completionTokens,
+    reasoningTokens: usage.reasoningTokens,
+    cacheHitTokens: usage.cacheHitTokens,
+    cacheMissTokens: usage.cacheMissTokens,
+    cacheHitRatio: usage.cacheHitRatio,
+    estimatedCost: usage.estimatedCost,
+    currency: usage.currency,
+    usageSource: usage.usageSource,
+  };
 }
 
 export function makeTaskRecordForTest(
@@ -128,6 +142,8 @@ export function makeTaskRecordForTest(
     repairRounds: 0,
     repairActive: false,
     inspectedAfterPause: false,
+    pauseRevision: 0,
+    pauseReasonHash: '',
     summary: '',
     changedFiles: [],
     risks: [],

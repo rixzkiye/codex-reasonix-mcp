@@ -60,6 +60,7 @@ describe('isolated Git finalization', () => {
       repository.head,
       'git-success: create result',
       await resolveGitIdentity(repository),
+      'refs/heads/reasonix/git-success',
     );
     expect(commit).not.toBe(repository.head);
     const sourceHead = await runCommand({ argv: ['git', 'rev-parse', 'HEAD'], cwd: source });
@@ -69,6 +70,59 @@ describe('isolated Git finalization', () => {
       cwd: source,
     });
     expect(count.stdout.trim()).toBe('1');
+  });
+
+  it('rejects a prefix-valid but wrong branch without touching ref or index', async () => {
+    const source = await createGitRepository();
+    const repository = await discoverRepository(source);
+    // Pre-create a sibling branch with a valid reasonix/ prefix but the wrong
+    // identity for this task.
+    const sibling = await runCommand({
+      argv: ['git', 'branch', 'reasonix/other-task'],
+      cwd: source,
+    });
+    expect(sibling.exitCode).toBe(0);
+    const isolated = await createIsolatedWorktree(
+      repository,
+      path.join(source, '.ignored-state-worktrees'),
+      'ownership-check',
+      repository.head,
+    );
+    const moved = await runCommand({
+      argv: ['git', 'checkout', 'reasonix/other-task'],
+      cwd: isolated.worktree,
+    });
+    expect(moved.exitCode).toBe(0);
+    await writeFile(path.join(isolated.worktree, 'result.txt'), 'offline result\n', 'utf8');
+    await stageExplicitFiles(isolated.worktree, ['result.txt']);
+    const indexBefore = await runCommand({
+      argv: ['git', 'write-tree'],
+      cwd: isolated.worktree,
+    });
+
+    await expect(
+      createAtomicCommit(
+        isolated.worktree,
+        repository.head,
+        'ownership: must not commit',
+        await resolveGitIdentity(repository),
+        'refs/heads/reasonix/ownership-check',
+      ),
+    ).rejects.toMatchObject({ code: 'ownership_ambiguous' });
+
+    // Ref and index are byte-identical afterwards.
+    const head = await runCommand({ argv: ['git', 'rev-parse', 'HEAD'], cwd: isolated.worktree });
+    expect(head.stdout.trim()).toBe(repository.head);
+    const indexAfter = await runCommand({
+      argv: ['git', 'write-tree'],
+      cwd: isolated.worktree,
+    });
+    expect(indexAfter.stdout.trim()).toBe(indexBefore.stdout.trim());
+    const siblingHead = await runCommand({
+      argv: ['git', 'rev-parse', 'reasonix/other-task'],
+      cwd: source,
+    });
+    expect(siblingHead.stdout.trim()).toBe(repository.head);
   });
 
   it('rejects out-of-scope files and secrets before staging', async () => {
@@ -196,6 +250,8 @@ describe('isolated Git finalization', () => {
         repository.head,
         'hook-failure: should not commit',
         await resolveGitIdentity(repository),
+        'refs/heads/reasonix/hook-failure',
+        { runGitHooks: true, repositoryRoot: repository.root },
       ),
     ).rejects.toMatchObject({ code: 'commit_failed' });
     const head = await runCommand({ argv: ['git', 'rev-parse', 'HEAD'], cwd: isolated.worktree });
@@ -216,11 +272,7 @@ describe('isolated Git finalization', () => {
     const hooks = path.join(repository.commonDir, 'hooks');
     await mkdir(hooks, { recursive: true });
     const hook = path.join(hooks, 'pre-commit');
-    await writeFile(
-      hook,
-      '#!/bin/sh\nprintf "hook mutation\\n" > result.txt\ngit add -- result.txt\nexit 0\n',
-      'utf8',
-    );
+    await writeFile(hook, '#!/bin/sh\nprintf "hook mutation\\n" > result.txt\nexit 0\n', 'utf8');
     await chmod(hook, 0o755);
 
     await expect(
@@ -229,6 +281,8 @@ describe('isolated Git finalization', () => {
         repository.head,
         'hook-mutation: reject mutation',
         await resolveGitIdentity(repository),
+        'refs/heads/reasonix/hook-mutation',
+        { runGitHooks: true, repositoryRoot: repository.root },
       ),
     ).rejects.toMatchObject({ code: 'ownership_ambiguous' });
     const head = await runCommand({ argv: ['git', 'rev-parse', 'HEAD'], cwd: isolated.worktree });
@@ -268,6 +322,7 @@ describe('isolated Git finalization', () => {
       repository.head,
       'environment-identity: commit without config',
       identity,
+      'refs/heads/reasonix/environment-identity',
     );
     const author = await runCommand({
       argv: ['git', 'show', '-s', '--format=%an <%ae>', commit],

@@ -2,7 +2,8 @@ import type { BridgeConfig } from '../config.js';
 import { assertLaneCompatible } from '../acp.js';
 import { BridgeError, asBridgeError } from '../errors.js';
 import { fileAssertionEvidenceForCriterion, verifyFileAssertions } from '../file-assertions.js';
-import { transitionTask } from '../lifecycle.js';
+import { enterPaused, transitionTask } from '../lifecycle.js';
+import { git } from '../repository.js';
 import {
   assertChangedFilesInScope,
   assertFileSizes,
@@ -27,6 +28,38 @@ import type { RuntimeCallContext } from './api.js';
 import type { CollisionAccess } from './collision.js';
 import type { SessionAccess } from './session-supervision.js';
 import { taskView, waitForTask, waitTimeoutMs } from './shared.js';
+
+/**
+ * Snapshot-bound approval check: the finalize approval must echo the exact
+ * reviewed snapshot (revision + tree hash) the client inspected. Enforced at
+ * every finalize checkpoint so an approval captured before a repair that
+ * re-captured the tree is always rejected.
+ */
+function assertApprovalCurrent(
+  task: TaskRecord,
+  expectedReviewRevision: number,
+  expectedReviewTreeHash: string,
+  checkpoint: string,
+): void {
+  const currentHash = task.reviewTreeHash ?? '';
+  if (expectedReviewRevision !== task.reviewRevision || expectedReviewTreeHash !== currentHash) {
+    throw new BridgeError(
+      'invalid_request',
+      'Finalize approval is stale: the reviewed snapshot changed since approval; re-inspect and approve the current snapshot',
+      {
+        checkpoint,
+        expected: {
+          review_revision: expectedReviewRevision,
+          review_tree_hash: expectedReviewTreeHash,
+        },
+        current: {
+          review_revision: task.reviewRevision,
+          review_tree_hash: currentHash,
+        },
+      },
+    );
+  }
+}
 
 export interface FinalizationDependencies {
   config: BridgeConfig;
@@ -96,6 +129,12 @@ export class FinalizationController implements FinalizationAccess {
     const message = input.commit_message
       ? validateCommitMessage(input.commit_message)
       : defaultCommitMessage(task.taskId, task.contract.objective);
+    assertApprovalCurrent(
+      task,
+      input.expected_review_revision,
+      input.expected_review_tree_hash,
+      'finalize_start',
+    );
     const identity = await resolveGitIdentity(repository);
     await this.dependencies.collision.holdLease(repository, task.taskId);
     await this.dependencies.store.recordEvent(task.taskId, 'finalization_started', {}, (record) => {
@@ -111,6 +150,8 @@ export class FinalizationController implements FinalizationAccess {
       message,
       identity,
       controller.signal,
+      input.expected_review_revision,
+      input.expected_review_tree_hash,
     )
       .catch(async (error: unknown) => {
         const bridgeError = asBridgeError(error);
@@ -139,20 +180,20 @@ export class FinalizationController implements FinalizationAccess {
           { code: bridgeError.code, message: bridgeError.message, details: bridgeError.details },
           (record) => {
             if (record.status === 'verifying') {
-              transitionTask(
-                record,
-                commitOrRefFailure
-                  ? 'commit_failed'
-                  : indexRecoveryFailed
-                    ? 'paused'
-                    : 'review_required',
-                commitOrRefFailure
-                  ? 'commit_failed'
-                  : indexRecoveryFailed
-                    ? 'index_recovery_failed'
-                    : 'verification_repair_required',
-                `${bridgeError.code}: ${bridgeError.message}`,
-              );
+              if (indexRecoveryFailed) {
+                enterPaused(
+                  record,
+                  'index_recovery_failed',
+                  `${bridgeError.code}: ${bridgeError.message}`,
+                );
+              } else {
+                transitionTask(
+                  record,
+                  commitOrRefFailure ? 'commit_failed' : 'review_required',
+                  commitOrRefFailure ? 'commit_failed' : 'verification_repair_required',
+                  `${bridgeError.code}: ${bridgeError.message}`,
+                );
+              }
               if (repairableTree !== undefined && repairableTree !== record.reviewTreeHash) {
                 record.reviewTreeHash = repairableTree;
                 record.reviewRevision = (record.reviewRevision ?? 0) + 1;
@@ -222,6 +263,8 @@ export class FinalizationController implements FinalizationAccess {
     commitMessage: string,
     identity: Awaited<ReturnType<typeof resolveGitIdentity>>,
     signal: AbortSignal,
+    expectedReviewRevision: number,
+    expectedReviewTreeHash: string,
   ): Promise<void> {
     const assertActive = async (): Promise<void> => {
       if (signal.aborted) throw new BridgeError('invalid_state', 'Finalization was cancelled');
@@ -263,7 +306,12 @@ export class FinalizationController implements FinalizationAccess {
     );
 
     await assertActive();
-    const verification = await runAllVerification(task, this.dependencies.store, signal);
+    const verification = await runAllVerification(
+      task,
+      this.dependencies.store,
+      this.dependencies.config,
+      signal,
+    );
     if (verification.some((item) => !item.passed)) {
       throw new BridgeError(
         'verification_failed',
@@ -291,6 +339,12 @@ export class FinalizationController implements FinalizationAccess {
         },
       );
     }
+    assertApprovalCurrent(
+      task,
+      expectedReviewRevision,
+      expectedReviewTreeHash,
+      'after_verification',
+    );
     const assertionEvidence = await verifyFileAssertions(task.worktree, task.contract);
     files = verifiedFiles;
     await this.dependencies.store.recordEvent(taskId, 'verification_postflight_passed', {
@@ -352,8 +406,10 @@ export class FinalizationController implements FinalizationAccess {
     await assertActive();
     await this.dependencies.collision.guardTask(taskId, 'before_staging');
     task = await this.dependencies.store.loadTask(taskId);
+    assertApprovalCurrent(task, expectedReviewRevision, expectedReviewTreeHash, 'before_staging');
     let stagedByBridge = false;
     let commitCreated = false;
+    let createdCommitHash: string | undefined;
     try {
       await stageExplicitFiles(task.worktree, files);
       stagedByBridge = true;
@@ -392,7 +448,14 @@ export class FinalizationController implements FinalizationAccess {
           task.baseCommit,
           commitMessage,
           identity,
+          task.branch,
+          {
+            runGitHooks: this.dependencies.config.runGitHooks,
+            repositoryRoot: task.repository.root,
+            allowUnsandboxed: this.dependencies.config.allowUnsandboxed,
+          },
         );
+        createdCommitHash = commitHash;
         commitCreated = true;
       } catch (error) {
         const cause = asBridgeError(error);
@@ -413,11 +476,27 @@ export class FinalizationController implements FinalizationAccess {
       stagedByBridge = false;
     } catch (error) {
       const cause = asBridgeError(error);
-      if (commitCreated) {
+      if (commitCreated && createdCommitHash !== undefined) {
+        // The commit object exists but completion state could not be
+        // persisted: roll the task ref back to baseCommit (CAS) so no
+        // dangling task branch is left pointing at an unrecorded commit.
+        const rollback = await git(
+          task.worktree,
+          ['update-ref', task.branch, task.baseCommit, createdCommitHash],
+          60_000,
+        );
         throw new BridgeError(
           'commit_failed',
-          'Commit was created but completion state persistence failed',
-          { causeCode: cause.code, causeMessage: cause.message },
+          rollback.exitCode === 0
+            ? 'Commit was created but completion state persistence failed; task ref rolled back'
+            : 'Commit was created but completion state persistence failed and the task ref could not be rolled back',
+          {
+            causeCode: cause.code,
+            causeMessage: cause.message,
+            ...(rollback.exitCode !== 0
+              ? { rollbackFailed: true, rollbackStderr: rollback.stderr.slice(0, 16_384) }
+              : {}),
+          },
         );
       }
       if (stagedByBridge) {

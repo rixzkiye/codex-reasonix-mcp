@@ -15,6 +15,7 @@ import path from 'node:path';
 import { canonicalContractJson, contractHash, parseTaskContract } from './contracts.js';
 import type { TaskContractV1 } from './contracts.js';
 import { BridgeError } from './errors.js';
+import { enterPaused } from './lifecycle.js';
 import {
   ACTIVE_HOOK_SENTINEL_SCHEMA_VERSION,
   activeHookSentinelPath as hookSentinelPath,
@@ -49,6 +50,25 @@ async function privateDirectory(directory: string): Promise<void> {
   await chmod(directory, 0o700);
 }
 
+/**
+ * Fsync a directory so a preceding rename/unlink is durable. Directory fsync
+ * is not supported on every platform/filesystem; those failures are tolerated.
+ */
+async function fsyncDir(directory: string): Promise<void> {
+  let handle;
+  try {
+    handle = await open(directory, 'r');
+    await handle.sync();
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== 'EINVAL' && code !== 'ENOTSUP' && code !== 'EISDIR' && code !== 'EPERM') {
+      throw error;
+    }
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
 async function atomicWrite(file: string, value: string): Promise<void> {
   await privateDirectory(path.dirname(file));
   const temporary = `${file}.${randomUUID()}.tmp`;
@@ -63,9 +83,53 @@ async function atomicWrite(file: string, value: string): Promise<void> {
   // post-rename chmod window for a concurrent pruner/remover to race (ENOENT).
   await chmod(temporary, 0o600);
   await rename(temporary, file);
+  await fsyncDir(path.dirname(file));
 }
 
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
+
+/**
+ * Crash-consistent journal transaction envelope (pending-event.json). The
+ * envelope carries the event and the next state for the whole append window,
+ * letting startup recovery complete an interrupted transaction deterministically.
+ */
+const PENDING_EVENT_SCHEMA_VERSION = 1;
+
+function stateRecordEventSequence(state: Record<string, unknown>): number | undefined {
+  const value = state.eventSequence;
+  if (value === undefined) return undefined;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    invalidState('Stored eventSequence is not a non-negative integer');
+  }
+  return value;
+}
+
+/**
+ * Sequence of the last complete journal line, or -1 for an empty journal. A
+ * partial trailing line (crash mid-append) is ignored here; the pending
+ * envelope protocol recovers it.
+ */
+async function journalTailSeq(journalPath: string): Promise<number> {
+  let raw: string;
+  try {
+    raw = await readFile(journalPath, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return -1;
+    throw error;
+  }
+  let tail = -1;
+  for (const line of raw.split('\n')) {
+    if (line.length === 0) continue;
+    try {
+      const event = JSON.parse(line) as { seq?: unknown };
+      if (typeof event.seq === 'number' && Number.isInteger(event.seq)) tail = event.seq;
+    } catch {
+      // Trailing partial line; stop scanning.
+      break;
+    }
+  }
+  return tail;
+}
 const ISO_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const TASK_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
@@ -421,6 +485,8 @@ function parseTaskRecordFields(
     repairRounds: requireInteger(state.repairRounds, 'repairRounds'),
     repairActive: requireBoolean(state.repairActive, 'repairActive'),
     inspectedAfterPause: requireBoolean(state.inspectedAfterPause, 'inspectedAfterPause'),
+    pauseRevision: requireInteger(state.pauseRevision ?? 0, 'pauseRevision'),
+    pauseReasonHash: requireString(state.pauseReasonHash ?? '', 'pauseReasonHash'),
     summary: requireString(state.summary, 'summary'),
     changedFiles: requireStringArray(state.changedFiles, 'changedFiles'),
     risks: requireStringArray(state.risks, 'risks'),
@@ -550,6 +616,10 @@ export class StateStore {
     return path.join(this.taskDir(taskId), 'events.jsonl');
   }
 
+  pendingEventPath(taskId: string): string {
+    return path.join(this.taskDir(taskId), 'pending-event.json');
+  }
+
   verificationDir(taskId: string): string {
     return path.join(this.taskDir(taskId), 'verification');
   }
@@ -666,9 +736,180 @@ export class StateStore {
   }
 
   async loadTask(taskId: string): Promise<TaskRecord> {
+    await this.recoverPendingTransaction(taskId);
     const loaded = await this.readTask(taskId);
-    if (!loaded.needsMigration) return loaded.record;
+    if (!loaded.needsMigration) {
+      await this.alignJournalTail(taskId, loaded.record);
+      return loaded.record;
+    }
     return await this.persistMigration(taskId);
+  }
+
+  /**
+   * Duplicate-sequence guard for the (legacy) case of a journal ahead of the
+   * stored state without a pending envelope: the crash lost the state
+   * mutation, so align the stored sequence to the journal tail. The next
+   * append then continues from the tail instead of duplicating a sequence.
+   * State ahead of the journal is impossible under the append protocol and
+   * fails closed.
+   */
+  private async alignJournalTail(taskId: string, record: TaskRecord): Promise<void> {
+    const tail = await journalTailSeq(this.journalPath(taskId));
+    if (tail < 0) return;
+    if (tail < record.eventSequence) {
+      invalidState(
+        `Task state eventSequence ${String(record.eventSequence)} is ahead of the journal tail ${String(tail)}`,
+      );
+    }
+    if (tail === record.eventSequence) return;
+    record.eventSequence = tail;
+    await atomicWrite(this.statePath(taskId), `${JSON.stringify(record, null, 2)}\n`);
+    await fsyncDir(this.taskDir(taskId));
+  }
+
+  /**
+   * Reconcile an interrupted journal transaction. A pending-event.json
+   * envelope exists for the whole append window (envelope -> journal append
+   * -> state write -> envelope removal), so a crash at any point can be
+   * completed deterministically from the journal/state combination:
+   *   - journal behind (or truncated tail): re-append the event from the
+   *     envelope;
+   *   - state behind: write the next state from the envelope;
+   *   - both ahead: just drop the envelope.
+   * Irreconcilable conflicts (sequence gaps, malformed envelope, state ahead
+   * of the envelope) fail closed with invalid_state.
+   */
+  private async recoverPendingTransaction(taskId: string): Promise<void> {
+    try {
+      await stat(this.pendingEventPath(taskId));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw error;
+    }
+    const prior = this.updates.get(taskId) ?? Promise.resolve();
+    const current = prior.then(() => this.recoverPendingTransactionUnlocked(taskId));
+    this.updates.set(
+      taskId,
+      current.catch(() => undefined),
+    );
+    await current;
+  }
+
+  private async recoverPendingTransactionUnlocked(taskId: string): Promise<void> {
+    const pendingPath = this.pendingEventPath(taskId);
+    let raw: string;
+    try {
+      raw = await readFile(pendingPath, 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw error;
+    }
+    let envelope: unknown;
+    try {
+      envelope = JSON.parse(raw);
+    } catch {
+      invalidState('pending-event.json is not valid JSON');
+    }
+    const parsed = envelope as {
+      schemaVersion?: unknown;
+      seq?: unknown;
+      event?: unknown;
+      state?: unknown;
+    };
+    if (
+      parsed.schemaVersion !== PENDING_EVENT_SCHEMA_VERSION ||
+      typeof parsed.seq !== 'number' ||
+      !Number.isInteger(parsed.seq) ||
+      parsed.seq < 0 ||
+      typeof parsed.event !== 'object' ||
+      parsed.event === null ||
+      typeof parsed.state !== 'object' ||
+      parsed.state === null
+    ) {
+      invalidState('pending-event.json envelope is malformed');
+    }
+    const seq = parsed.seq;
+    const event = parsed.event as JournalEvent;
+    const state = parsed.state as Record<string, unknown>;
+
+    // Validate the journal: contiguous, monotonic sequences; the last line
+    // may be a partial trailing write (crash mid-append), recoverable only
+    // when the envelope proves the interrupted append.
+    const journalRaw = await readFile(this.journalPath(taskId), 'utf8').catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        invalidState('Journal is missing while a pending event envelope exists');
+      }
+      throw error;
+    });
+    const lines = journalRaw.split('\n').filter((line) => line.length > 0);
+    // The first append is seq 1 (eventSequence starts at 0), so the journal
+    // must be contiguous from 1.
+    let lastSeq = 0;
+    let truncated = false;
+    for (let index = 0; index < lines.length; index++) {
+      let parsedLine: JournalEvent;
+      try {
+        parsedLine = JSON.parse(lines[index]!) as JournalEvent;
+      } catch {
+        if (index !== lines.length - 1) {
+          invalidState(`Journal corruption before the trailing line (line ${index + 1})`);
+        }
+        truncated = true;
+        break;
+      }
+      if (
+        typeof parsedLine.seq !== 'number' ||
+        !Number.isInteger(parsedLine.seq) ||
+        parsedLine.seq !== lastSeq + 1
+      ) {
+        invalidState(`Journal sequence gap at line ${index + 1}`);
+      }
+      lastSeq = parsedLine.seq;
+    }
+
+    let storedStateSeq = -1;
+    try {
+      const storedState = JSON.parse(await readFile(this.statePath(taskId), 'utf8')) as Record<
+        string,
+        unknown
+      >;
+      storedStateSeq = stateRecordEventSequence(storedState) ?? -1;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    if (truncated) {
+      if (lastSeq + 1 !== seq) {
+        invalidState('Partial journal trailing write is not provable from the pending envelope');
+      }
+      const repaired = lines.slice(0, -1).join('\n');
+      await writeFile(this.journalPath(taskId), repaired.length > 0 ? `${repaired}\n` : '', {
+        mode: 0o600,
+      });
+      lastSeq = seq - 1;
+    }
+    if (storedStateSeq > seq) {
+      invalidState('Task state is ahead of the pending event envelope');
+    }
+    if (lastSeq > seq) {
+      invalidState('Journal is ahead of the pending event envelope');
+    }
+    if (lastSeq === seq - 1) {
+      const handle = await open(this.journalPath(taskId), 'a', 0o600);
+      try {
+        await handle.writeFile(`${JSON.stringify(event)}\n`, 'utf8');
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+    }
+    if (storedStateSeq < seq) {
+      await atomicWrite(this.statePath(taskId), `${JSON.stringify(state, null, 2)}\n`);
+    }
+    await fsyncDir(this.taskDir(taskId));
+    await unlink(pendingPath).catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    });
+    await fsyncDir(this.taskDir(taskId));
   }
 
   /**
@@ -718,6 +959,7 @@ export class StateStore {
   ): Promise<TaskRecord> {
     const prior = this.updates.get(taskId) ?? Promise.resolve();
     const current = prior.then(async () => {
+      await this.recoverPendingTransactionUnlocked(taskId);
       const { record } = await this.readTask(taskId);
       await update(record);
       await this.saveTask(record);
@@ -731,24 +973,7 @@ export class StateStore {
   }
 
   async appendEvent(taskId: string, type: string, data: unknown): Promise<JournalEvent> {
-    const { record } = await this.readTask(taskId);
-    const event: JournalEvent = {
-      seq: record.eventSequence + 1,
-      timestamp: new Date().toISOString(),
-      type,
-      data: redact(data),
-    };
-    const handle = await open(this.journalPath(taskId), 'a', 0o600);
-    try {
-      await handle.writeFile(`${JSON.stringify(event)}\n`, 'utf8');
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-    record.eventSequence = event.seq;
-    await this.saveTask(record);
-    const metric = metricForAuditEvent(type, data, record);
-    if (metric) await this.metrics.record(taskId, metric);
+    const { event } = await this.appendEventWithState(taskId, type, data, () => undefined);
     return event;
   }
 
@@ -758,14 +983,46 @@ export class StateStore {
     data: unknown,
     update?: (record: TaskRecord) => void,
   ): Promise<TaskRecord> {
-    const record = await this.updateTask(taskId, async (record) => {
+    const { record } = await this.appendEventWithState(taskId, type, data, update);
+    return record;
+  }
+
+  /**
+   * Crash-consistent journal append. Under the per-task update chain:
+   *   1. compute the event and the next state;
+   *   2. atomic-write a pending-event.json envelope (event + next state);
+   *   3. append + fsync the journal;
+   *   4. atomic-write state.json and fsync the task directory;
+   *   5. remove the envelope and fsync the directory.
+   * A crash at any step leaves an envelope that startup recovery reconciles
+   * (journal/state combination), so a sequence can never be duplicated and a
+   * state mutation can never be lost.
+   */
+  private async appendEventWithState(
+    taskId: string,
+    type: string,
+    data: unknown,
+    update: ((record: TaskRecord) => void) | undefined,
+  ): Promise<{ record: TaskRecord; event: JournalEvent }> {
+    const prior = this.updates.get(taskId) ?? Promise.resolve();
+    const current = prior.then(async () => {
+      await this.recoverPendingTransactionUnlocked(taskId);
+      const { record } = await this.readTask(taskId);
       update?.(record);
+      const seq = record.eventSequence + 1;
       const event: JournalEvent = {
-        seq: record.eventSequence + 1,
+        seq,
         timestamp: new Date().toISOString(),
         type,
         data: redact(data),
       };
+      record.eventSequence = seq;
+      record.updatedAt = new Date().toISOString();
+      const pendingPath = this.pendingEventPath(taskId);
+      await atomicWrite(
+        pendingPath,
+        `${JSON.stringify({ schemaVersion: PENDING_EVENT_SCHEMA_VERSION, seq, event, state: record })}\n`,
+      );
       const handle = await open(this.journalPath(taskId), 'a', 0o600);
       try {
         await handle.writeFile(`${JSON.stringify(event)}\n`, 'utf8');
@@ -773,11 +1030,21 @@ export class StateStore {
       } finally {
         await handle.close();
       }
-      record.eventSequence = event.seq;
+      await atomicWrite(this.statePath(taskId), `${JSON.stringify(record, null, 2)}\n`);
+      await fsyncDir(this.taskDir(taskId));
+      await unlink(pendingPath).catch((error: unknown) => {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      });
+      await fsyncDir(this.taskDir(taskId));
+      const metric = metricForAuditEvent(type, data, record);
+      if (metric) await this.metrics.record(taskId, metric);
+      return { record, event };
     });
-    const metric = metricForAuditEvent(type, data, record);
-    if (metric) await this.metrics.record(taskId, metric);
-    return record;
+    this.updates.set(
+      taskId,
+      current.catch(() => undefined),
+    );
+    return await current;
   }
 
   async readEvents(taskId: string, afterSequence = 0): Promise<JournalEvent[]> {
@@ -786,7 +1053,13 @@ export class StateStore {
     return raw
       .split('\n')
       .filter(Boolean)
-      .map((line) => JSON.parse(line) as JournalEvent)
+      .map((line) => {
+        try {
+          return JSON.parse(line) as JournalEvent;
+        } catch {
+          invalidState('Journal contains an unparseable event line');
+        }
+      })
       .filter((event) => event.seq > afterSequence);
   }
 
@@ -807,10 +1080,11 @@ export class StateStore {
           'restart_recovery',
           { previousStatus: record.status },
           (task) => {
-            task.status = 'paused';
-            task.phase = 'restart_recovery';
-            task.reason = 'Bridge restart detected; inspect before explicit resume';
-            task.inspectedAfterPause = false;
+            enterPaused(
+              task,
+              'restart_recovery',
+              'Bridge restart detected; inspect before explicit resume',
+            );
             for (const interaction of task.interactions) {
               if (interaction.status === 'pending') interaction.status = 'cancelled';
             }

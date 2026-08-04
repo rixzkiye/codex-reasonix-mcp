@@ -101,7 +101,11 @@ Inspect verification, acceptance evidence, opt-in events, collision evidence,
 and the bounded diff. `allowed_commands` results do not count as acceptance
 evidence. A verification failure before commit returns to `review_required`
 with repairable evidence. `commit_failed` is reserved for commit/ref failures;
-neither state is reported as completed. The branch/worktree are retained.
+neither state is reported as completed. The branch/worktree are retained. Keep
+the task at review: after inspection or repair, copy the current
+`review_revision` to `expected_review_revision` and `review_tree_hash` to
+`expected_review_tree_hash`, then finalize again. Never copy the diff manually
+into the source checkout or close the task to bypass recovery.
 
 ## Archive and prune refused
 

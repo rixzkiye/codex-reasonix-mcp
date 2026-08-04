@@ -14,7 +14,7 @@ import { taskView, waitForTask } from '../../src/runtime/shared.js';
 import { StateStore } from '../../src/state.js';
 import { delegateOutputSchema } from '../../src/tool-schemas.js';
 import type { TaskRecord } from '../../src/types.js';
-import { contractFixture, createGitRepository, sandboxMeta } from '../helpers.js';
+import { approvalFor, contractFixture, createGitRepository, sandboxMeta } from '../helpers.js';
 
 const runtimes: BridgeRuntime[] = [];
 const supervisors: SessionSupervisor[] = [];
@@ -224,6 +224,7 @@ describe('rc.3 context efficiency', () => {
       {
         task_id: 'two-call-happy-path',
         action: 'finalize',
+        ...approvalFor(review),
         review_summary: 'Scoped diff reviewed.',
         approved_review_criteria: [],
       },

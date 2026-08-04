@@ -22,6 +22,7 @@ export const BRIDGE_ERROR_CODES = [
   'commit_failed',
   'lease_conflict',
   'output_limit_exceeded',
+  'sandbox_unavailable',
   'internal_error',
 ] as const;
 
@@ -72,6 +73,7 @@ const ERROR_BEHAVIOR = {
   commit_failed: { retryable: false, next_action: 'repair_and_finalize' },
   lease_conflict: { retryable: true, next_action: 'retry' },
   output_limit_exceeded: { retryable: false, next_action: 'inspect_task' },
+  sandbox_unavailable: { retryable: false, next_action: 'install_or_upgrade' },
   internal_error: { retryable: false, next_action: 'none' },
 } as const satisfies Record<BridgeErrorCode, { retryable: boolean; next_action: NextAction }>;
 

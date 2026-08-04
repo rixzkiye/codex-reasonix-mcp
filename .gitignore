@@ -8,3 +8,6 @@ coverage/
 .env.*
 !.env.example
 .pnpm-store/
+
+# Local scratch/tmp test directories
+tmptest/
