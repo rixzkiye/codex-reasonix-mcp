@@ -59,8 +59,10 @@ async function atomicWrite(file: string, value: string): Promise<void> {
   } finally {
     await handle.close();
   }
+  // Lock the final mode on the temporary file before the rename so there is no
+  // post-rename chmod window for a concurrent pruner/remover to race (ENOENT).
+  await chmod(temporary, 0o600);
   await rename(temporary, file);
-  await chmod(file, 0o600);
 }
 
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
