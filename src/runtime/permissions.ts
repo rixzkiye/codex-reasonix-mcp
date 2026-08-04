@@ -4,7 +4,7 @@ import type { RequestPermissionRequest, RequestPermissionResponse } from '@agent
 
 import type { BridgeConfig } from '../config.js';
 import { BridgeError } from '../errors.js';
-import { canTransition, transitionTask } from '../lifecycle.js';
+import { canTransition, enterPaused, transitionTask } from '../lifecycle.js';
 import { decidePermission } from '../policy.js';
 import { redact } from '../redaction.js';
 import {
@@ -119,8 +119,7 @@ export class PermissionController implements PermissionAccess {
   ): Promise<TaskRecord> {
     const task = await this.dependencies.store.recordEvent(taskId, event, data, (record) => {
       if (canTransition(record.status, 'paused')) {
-        transitionTask(record, 'paused', phase, reason);
-        record.inspectedAfterPause = false;
+        enterPaused(record, phase, reason);
       }
     });
     this.clearTaskCommands(taskId);

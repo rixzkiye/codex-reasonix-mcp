@@ -2,6 +2,73 @@
 
 All notable changes are documented here. Versions follow Semantic Versioning.
 
+## [0.2.0-rc.4] - 2026-08-04
+
+### Added
+
+- Run repository-controlled content in an OS command sandbox: verification
+  commands, the external secret scanner, and Git hooks execute through
+  `SandboxedCommandRunner` (bubblewrap on Linux, seatbelt on macOS) with
+  network disabled, the filesystem read-only outside the worktree, and
+  credential stores (`~/.ssh`, `~/.aws`, `~/.config`, ...) hidden; posture
+  fails closed when the sandbox is unavailable.
+- Replace full host-environment inheritance with an explicit allowlist: the
+  Reasonix ACP child gets a system baseline (PATH, HOME, CODEX_HOME, locale,
+  temp, XDG_*, CA variables) plus `REASONIX_*` pass-through; anything else —
+  provider credentials included — is forwarded only through
+  `CODEX_REASONIX_ENV_ALLOWLIST` (comma-separated picomatch globs), and the
+  hard-deny list (`NODE_OPTIONS`, `LD_PRELOAD`, ...) wins over the allowlist.
+- Bind finalize approval to the exact reviewed snapshot: control input now
+  requires `expected_review_revision` and `expected_review_tree_hash`,
+  validated at `finalize_start`, `after_verification`, and `before_staging`
+  so an approval captured before a repair that re-captured the tree is
+  rejected with the fresh snapshot in the error details; `taskView` and
+  `reasonix_delegate` output carry `review_tree_hash`.
+- Make pause acknowledgment token-bound: a monotonic `pauseRevision` plus
+  `pauseReasonHash` (sha256 of the canonical pause reason) are stored in task
+  state and bumped through a single `enterPaused()` helper.
+- Persist task state with crash-consistent journal transactions: each append
+  is a bounded pending transaction (atomic-write pending-event envelope,
+  append + fsync `events.jsonl`, atomic-write + fsync `state.json`, remove
+  envelope + fsync directory), and startup recovery reconciles interrupted
+  transactions from the journal/state combination.
+- Own the atomic commit exactly: `createAtomicCommit` takes the task's
+  `expectedBranch` and requires an exact symbolic-ref HEAD match (prefix
+  siblings are rejected before any ref or index write), uses the same exact
+  ref for the forward update-ref CAS and the rollback CAS, and `assertStagedChecks`
+  runs with `--no-ext-diff` so configured textconv/external diff drivers can
+  never execute during bridge checks.
+- Add an end-to-end security proof matrix (`tests/e2e/security-matrix.test.ts`)
+  covering credential reads, network egress, out-of-worktree writes, Git
+  hooks, and environment exfiltration rows against the integrated hardening.
+- Extend `doctor` with a real command-sandbox availability probe and report
+  the effective posture (`run_git_hooks`, `allow_unsandboxed`, env allowlist
+  size) in its JSON report.
+- Rewrite `docs/security.md` around the hardened model — sandboxing and trust
+  boundaries, environment allowlist, approval and pause binding, journal
+  durability, exact Git ownership, and a threat-model table mapping every
+  matrix row to its gates and tests — and add a security-posture section to
+  the README.
+
+### Fixed
+
+- Resume legacy pauses (recorded before pause tokens existed, `pauseRevision` 0) directly instead of requiring `inspectedAfterPause`, which production
+  code no longer sets — such tasks previously could never resume.
+- Deny hardlink creation (`file-link`) in the seatbelt profile so credential
+  files cannot be hardlinked into the writable worktree; keep `/dev/null`
+  writable for git, extend the credential overlay list
+  (`.kube`, `.docker`, `.password-store`, `.git-credentials`,
+  `~/Library/Keychains`), and give sandboxed commands a writable scratch dir
+  (private tmpfs pinned via `TMPDIR`/`TMP`/`TEMP` under bubblewrap; a
+  per-command scratch directory under seatbelt).
+- Report `sandbox_posture` as not ok when `CODEX_REASONIX_ALLOW_UNSANDBOXED`
+  is set.
+- Make journal `readEvents` fail closed on unparseable lines instead of
+  throwing a raw JSON parse error.
+- Restore finalize and Reasonix usage compatibility: contracts, status
+  parsing, server routing, and tool schemas accept current Reasonix usage
+  responses again.
+
 ## [0.2.0-rc.3] - 2026-08-03
 
 ### Added

@@ -1,7 +1,7 @@
 import type { BridgeConfig } from '../config.js';
 import { BridgeError } from '../errors.js';
 import { acquireLease, type Lease } from '../lease.js';
-import { canTransition, transitionTask } from '../lifecycle.js';
+import { canTransition, enterPaused } from '../lifecycle.js';
 import { isWriteAllowed } from '../contracts.js';
 import { resolveBaseCommit, sourceRepositoryChanges } from '../repository.js';
 import type { StateStore } from '../state.js';
@@ -149,8 +149,7 @@ export class CollisionController implements CollisionAccess {
       (record) => {
         record.sourceCollision = collision;
         if (!TERMINAL_STATUSES.has(record.status) && canTransition(record.status, 'paused')) {
-          transitionTask(record, 'paused', 'source_collision', message);
-          record.inspectedAfterPause = false;
+          enterPaused(record, 'source_collision', message);
         }
       },
     );

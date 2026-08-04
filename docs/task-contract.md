@@ -66,7 +66,10 @@ semantic problems together rather than stopping at the first issue.
 
 Contract rules:
 
-- `write_scope` is required and nonempty; `forbidden_scope` always wins.
+- `write_scope` is required, nonempty, and already acts as the exclusive write
+  allowlist: every unlisted path is denied. `forbidden_scope` is only an extra
+  sensitive carve-out inside a broader write scope and always wins. Never use
+  `**/*` or another catch-all that matches a concrete `write_scope` target.
 - Paths/globs and command cwd are repository-relative, POSIX-normalized, never
   absolute, and may not contain a `..` segment.
 - Symlinks are resolved before scope checks; escapes are rejected.
