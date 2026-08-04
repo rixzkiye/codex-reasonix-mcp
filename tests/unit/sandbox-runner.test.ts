@@ -93,6 +93,7 @@ describe('seatbelt profile construction', () => {
     expect(profile).toContain('(deny network*)');
     expect(profile).toContain('(deny file-write* (subpath "/"))');
     expect(profile).toContain('(deny file-link)');
+    expect(profile).toContain('(allow file-write* (literal "/dev/null"))');
     expect(profile).toContain('(allow file-write* (subpath "/Users/user/state/worktrees/r/task"))');
     // host temp stays writable as the sandbox scratch space
     expect(profile).toContain(`(allow file-write* (subpath "${os.tmpdir()}"))`);

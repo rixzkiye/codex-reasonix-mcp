@@ -166,6 +166,9 @@ export function buildSeatbeltProfile(
     lines.push(`(deny file-read* (subpath "${escapeProfilePath(overlay.path)}"))`);
   }
   lines.push(`(deny file-write* (subpath "/"))`);
+  // git and other tools open /dev/null for writing; the write deny above
+  // must not break them.
+  lines.push('(allow file-write* (literal "/dev/null"))');
   // Hardlink exfiltration: a hardlink to a hidden credential file created
   // inside the writable worktree resolves to the worktree path, bypassing
   // path-based read denies. Deny link creation outright.

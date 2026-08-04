@@ -147,7 +147,7 @@ describe.skipIf(!sandboxed)('command sandbox adversarial gates', () => {
     const result = await runSandboxed(
       {
         worktree,
-        argv: ['/usr/bin/test', '-f', 'result.txt'],
+        argv: ['/bin/sh', '-c', 'test -f result.txt'],
         cwd: worktree,
       },
       false,
