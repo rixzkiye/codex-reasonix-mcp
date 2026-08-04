@@ -62,6 +62,9 @@ Posture (fail closed):
 
 Descendants cannot outlive a command: process-group kill plus the pid
 namespace of the sandbox reap background children on abort, timeout, or exit.
+`TMPDIR` is pinned to a writable scratch space inside the sandbox, and on
+macOS hardlink creation is denied so credential files cannot be linked into
+the writable worktree to bypass path-based read denies.
 
 **Git hooks are disabled by default.** `pre-commit`, `prepare-commit-msg`, and
 `commit-msg` only run when `CODEX_REASONIX_RUN_GIT_HOOKS=true` is set, and then

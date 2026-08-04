@@ -167,9 +167,9 @@ export class OperationController implements OperationAccess {
               },
             );
           }
-        } else if (!existing.inspectedAfterPause) {
-          return { ...taskView(existing), resume_required: true, inspect_required: true };
         }
+        // Legacy pauses (pauseRevision 0, recorded before pause tokens
+        // existed) have no token to echo; they resume directly.
         await this.dependencies.collision.guardTask(taskId, 'resume');
         const currentNetworkEnabled =
           this.dependencies.config.networkEnabled && sandbox.networkEnabled;

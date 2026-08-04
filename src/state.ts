@@ -1053,7 +1053,13 @@ export class StateStore {
     return raw
       .split('\n')
       .filter(Boolean)
-      .map((line) => JSON.parse(line) as JournalEvent)
+      .map((line) => {
+        try {
+          return JSON.parse(line) as JournalEvent;
+        } catch {
+          invalidState('Journal contains an unparseable event line');
+        }
+      })
       .filter((event) => event.seq > afterSequence);
   }
 

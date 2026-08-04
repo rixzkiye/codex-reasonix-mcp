@@ -92,7 +92,10 @@ describe('seatbelt profile construction', () => {
     const profile = buildSeatbeltProfile(base, overlays);
     expect(profile).toContain('(deny network*)');
     expect(profile).toContain('(deny file-write* (subpath "/"))');
+    expect(profile).toContain('(deny file-link*)');
     expect(profile).toContain('(allow file-write* (subpath "/Users/user/state/worktrees/r/task"))');
+    // host temp stays writable as the sandbox scratch space
+    expect(profile).toContain(`(allow file-write* (subpath "${os.tmpdir()}"))`);
   });
 
   it('denies reads of credential overlays and allows read-only binds', () => {
@@ -115,6 +118,29 @@ describe('seatbelt profile construction', () => {
 });
 
 describe('credential overlay resolution', () => {
+  it('covers credential stores including kube/docker/password stores and macOS keychains', async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), 'reasonix-overlay-home-'));
+    try {
+      await mkdir(path.join(home, '.ssh'));
+      await mkdir(path.join(home, '.kube'));
+      await mkdir(path.join(home, '.docker'));
+      await mkdir(path.join(home, '.password-store'));
+      await mkdir(path.join(home, 'Library', 'Keychains'), { recursive: true });
+      await writeFile(path.join(home, '.git-credentials'), 'https://user:pass@example.com\n');
+      const overlays = await resolveCredentialOverlays(home);
+      for (const name of ['.ssh', '.kube', '.docker', '.password-store', 'Library/Keychains']) {
+        expect(overlays).toEqual(
+          expect.arrayContaining([{ path: path.join(home, name), kind: 'dir' }]),
+        );
+      }
+      expect(overlays).toEqual(
+        expect.arrayContaining([{ path: path.join(home, '.git-credentials'), kind: 'file' }]),
+      );
+    } finally {
+      await import('node:fs/promises').then(({ rm }) => rm(home, { recursive: true, force: true }));
+    }
+  });
+
   it('only includes paths that exist and match their expected kind', async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), 'reasonix-overlay-home-'));
     try {
@@ -246,6 +272,25 @@ describe('runSandboxed', () => {
       });
     });
     expect(ps.split('\n').filter((line) => line.includes(marker))).toEqual([]);
+  });
+
+  it.skipIf(!sandboxStatus.available)('pins a writable TMPDIR inside the sandbox', async () => {
+    const worktree = await mkdtemp(path.join(os.tmpdir(), 'reasonix-sandbox-tmp-'));
+    const result = await runSandboxed(
+      {
+        worktree,
+        argv: [
+          '/bin/sh',
+          '-c',
+          'echo TMPDIR=$TMPDIR; touch $TMPDIR/probe-$$.tmp && echo TMP_WRITABLE',
+        ],
+        cwd: worktree,
+      },
+      false,
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain('TMPDIR=/tmp');
+    expect(result.stdout).toContain('TMP_WRITABLE');
   });
 
   it.skipIf(!sandboxStatus.available)('resolves symlinked worktrees before binding', async () => {

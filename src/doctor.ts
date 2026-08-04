@@ -788,7 +788,7 @@ export async function runDoctor(
   });
   checks.push({
     name: 'sandbox_posture',
-    ok: true,
+    ok: !config.allowUnsandboxed,
     detail: `run_git_hooks=${String(config.runGitHooks)} allow_unsandboxed=${String(config.allowUnsandboxed)} env_allowlist_entries=${String(config.envAllowlist.length)}`,
     required: false,
   });

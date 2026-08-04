@@ -60,10 +60,16 @@ const CREDENTIAL_HOME_ENTRIES: ReadonlyArray<readonly [string, 'dir' | 'file']> 
   ['.aws', 'dir'],
   ['.config', 'dir'],
   ['.codex', 'dir'],
+  ['.kube', 'dir'],
+  ['.docker', 'dir'],
+  ['.password-store', 'dir'],
   ['.netrc', 'file'],
   ['.npmrc', 'file'],
   ['.yarnrc', 'file'],
   ['.gitconfig', 'file'],
+  ['.git-credentials', 'file'],
+  // macOS keychain stores live under ~/Library/Keychains.
+  [path.join('Library', 'Keychains'), 'dir'],
 ];
 
 export async function resolveCredentialOverlays(
@@ -150,7 +156,15 @@ export function buildSeatbeltProfile(
     lines.push(`(deny file-read* (subpath "${escapeProfilePath(overlay.path)}"))`);
   }
   lines.push(`(deny file-write* (subpath "/"))`);
+  // Hardlink exfiltration: a hardlink to a hidden credential file created
+  // inside the writable worktree resolves to the worktree path, bypassing
+  // path-based read denies. Deny link creation outright.
+  lines.push('(deny file-link*)');
   lines.push(`(allow file-write* (subpath "${escapeProfilePath(options.worktree)}"))`);
+  // Guaranteed writable scratch space: host temp stays writable so tools
+  // honoring TMPDIR have a scratch dir (the rest of the filesystem is
+  // read-only or denied).
+  lines.push(`(allow file-write* (subpath "${escapeProfilePath(os.tmpdir())}"))`);
   if (options.repositoryRoot) {
     lines.push(`(allow file-read* (subpath "${escapeProfilePath(options.repositoryRoot)}"))`);
   }
@@ -255,6 +269,15 @@ export async function runSandboxed(
   const worktree = await realpath(options.worktree);
   const cwd = await realpath(options.cwd);
   const overlays = await resolveCredentialOverlays();
+  // Pin temp so tools honoring TMPDIR always have a writable scratch space:
+  // bubblewrap exposes a private tmpfs at /tmp; seatbelt allows writes to
+  // the host temp directory (profile).
+  const sandboxEnv: Record<string, string> = { ...(options.env ?? {}) };
+  if (status.engine === 'bubblewrap') {
+    sandboxEnv.TMPDIR = '/tmp';
+    sandboxEnv.TMP = '/tmp';
+    sandboxEnv.TEMP = '/tmp';
+  }
   const argv: [string, ...string[]] =
     status.engine === 'bubblewrap'
       ? buildBwrapArgv({ ...options, worktree, cwd }, overlays)
@@ -270,7 +293,7 @@ export async function runSandboxed(
     cwd,
     timeoutMs: options.timeoutMs,
     maxOutputBytes: options.maxOutputBytes,
-    env: options.env,
+    env: sandboxEnv,
     signal: options.signal,
   });
 }
