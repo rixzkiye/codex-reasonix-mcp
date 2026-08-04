@@ -19,6 +19,10 @@ export interface BridgeConfig {
   maxBinaryBytes: number;
   leaseStaleMs: number;
   leaseHeartbeatMs: number;
+  /** Run repository Git hooks (pre-commit/prepare-commit-msg/commit-msg) through the command sandbox. Off by default. */
+  runGitHooks: boolean;
+  /** Explicit escape hatch: run verification/scanner/hooks without an OS sandbox when none is available. */
+  allowUnsandboxed: boolean;
 }
 
 function parseReasoningEffort(value: string | undefined): ReasoningEffort {
@@ -81,6 +85,8 @@ export function loadConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig 
     maxBinaryBytes: 10 * 1024 * 1024,
     leaseStaleMs: 30_000,
     leaseHeartbeatMs: 5_000,
+    runGitHooks: process.env.CODEX_REASONIX_RUN_GIT_HOOKS === 'true',
+    allowUnsandboxed: process.env.CODEX_REASONIX_ALLOW_UNSANDBOXED === 'true',
     ...overrides,
   };
 }

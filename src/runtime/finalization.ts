@@ -263,7 +263,12 @@ export class FinalizationController implements FinalizationAccess {
     );
 
     await assertActive();
-    const verification = await runAllVerification(task, this.dependencies.store, signal);
+    const verification = await runAllVerification(
+      task,
+      this.dependencies.store,
+      this.dependencies.config,
+      signal,
+    );
     if (verification.some((item) => !item.passed)) {
       throw new BridgeError(
         'verification_failed',
@@ -392,6 +397,11 @@ export class FinalizationController implements FinalizationAccess {
           task.baseCommit,
           commitMessage,
           identity,
+          {
+            runGitHooks: this.dependencies.config.runGitHooks,
+            repositoryRoot: task.repository.root,
+            allowUnsandboxed: this.dependencies.config.allowUnsandboxed,
+          },
         );
         commitCreated = true;
       } catch (error) {
