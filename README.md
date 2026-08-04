@@ -31,11 +31,30 @@ capability checks—not a version string—remain authoritative.
 - Linux, macOS, or Windows through WSL; native Windows is rejected
 - Reasonix v1.19.0 or a compatible newer build with ACP v1 supervisor/status
   capabilities and static command metadata v1
-- Bubblewrap on Linux/WSL or Seatbelt on macOS
+- Bubblewrap on Linux/WSL or Seatbelt on macOS (required: verification, the
+  secret scanner, and Git hooks execute inside the OS command sandbox and
+  fail closed when no engine is available)
 - A configured Reasonix provider exposing the selected model
 
 Reasonix, provider credentials, and provider billing remain user-managed. This
 package neither downloads nor bundles Reasonix.
+
+## Security posture
+
+Repository-controlled content never executes unsandboxed: verification
+commands, the external secret scanner, and (when explicitly enabled) Git hooks
+run inside a network-disabled, filesystem-restricted OS sandbox with hidden
+credential stores. Git hooks are **off by default**
+(`CODEX_REASONIX_RUN_GIT_HOOKS=true` re-enables them through the sandbox).
+The Reasonix worker receives an explicitly allowlisted environment
+(`CODEX_REASONIX_ENV_ALLOWLIST`) instead of the host environment; injection
+variables are hard-denied. Finalize approvals and pause acknowledgments are
+bound to reviewed-snapshot and pause tokens, journal appends are
+crash-consistent, and the bridge commit requires the exact task branch.
+
+See [docs/security.md](docs/security.md) for the threat model, the proof
+matrix, and the configuration knobs. The matrix gates run on Linux and macOS
+in CI.
 
 ## Install for Codex
 
