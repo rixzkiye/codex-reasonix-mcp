@@ -536,7 +536,7 @@ function hardDenial(argv: readonly [string, ...string[]]): CommandDenial | undef
     return deny(
       'shell_eval',
       'Shell, eval, and opaque command wrappers are forbidden',
-      'Submit a direct static argv command without a shell.',
+      'Submit a direct static argv command without a shell, or use a contract file_assertion for byte-exact content checks.',
     );
   }
   if (
