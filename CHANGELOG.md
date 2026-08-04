@@ -54,8 +54,8 @@ All notable changes are documented here. Versions follow Semantic Versioning.
 
 - Resume legacy pauses (recorded before pause tokens existed, `pauseRevision` 0) directly instead of requiring `inspectedAfterPause`, which production
   code no longer sets — such tasks previously could never resume.
-- Deny `file-link*` in the seatbelt profile so credential files cannot be
-  hardlinked into the writable worktree; extend the credential overlay list
+- Deny hardlink creation (`file-link`) in the seatbelt profile so credential
+  files cannot be hardlinked into the writable worktree; extend the credential overlay list
   (`.kube`, `.docker`, `.password-store`, `.git-credentials`,
   `~/Library/Keychains`) and pin `TMPDIR`/`TMP`/`TEMP` to the private tmpfs
   under bubblewrap so tools always have a writable scratch directory.
