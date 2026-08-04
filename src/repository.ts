@@ -592,7 +592,9 @@ export async function stagedDiff(worktree: string): Promise<string> {
 }
 
 export async function assertStagedChecks(worktree: string): Promise<void> {
-  const whitespace = await git(worktree, ['diff', '--cached', '--check']);
+  // --no-ext-diff: repository-configured textconv/external diff drivers must
+  // never execute during bridge-owned checks.
+  const whitespace = await git(worktree, ['diff', '--cached', '--no-ext-diff', '--check']);
   if (whitespace.exitCode !== 0) {
     throw new BridgeError('verification_failed', 'Staged diff contains whitespace errors', {
       errors: whitespace.stdout.slice(0, 8_192),
@@ -605,14 +607,26 @@ export async function createAtomicCommit(
   baseCommit: string,
   message: string,
   identity: GitIdentity,
+  expectedBranch: string,
 ): Promise<string> {
   const before = (await gitChecked(worktree, ['rev-parse', 'HEAD'])).stdout.trim();
   if (before !== baseCommit) {
     throw new BridgeError('ownership_ambiguous', 'Worker HEAD moved before bridge commit');
   }
+  // Exact ownership: the worker must be on the exact task branch. A branch
+  // with a valid reasonix/ prefix but a different identity is rejected before
+  // any ref or index write. `expectedBranch` is accepted with or without the
+  // refs/heads/ prefix (task records store the short form).
+  const expectedRef = expectedBranch.startsWith('refs/heads/')
+    ? expectedBranch
+    : `refs/heads/${expectedBranch}`;
   const branch = (await gitChecked(worktree, ['symbolic-ref', '--quiet', 'HEAD'])).stdout.trim();
-  if (!branch.startsWith('refs/heads/reasonix/')) {
-    throw new BridgeError('ownership_ambiguous', 'Worker HEAD is not on a Reasonix task branch');
+  if (branch !== expectedRef) {
+    throw new BridgeError(
+      'ownership_ambiguous',
+      'Worker HEAD is not on the expected Reasonix task branch',
+      { expected: expectedRef, actual: branch },
+    );
   }
   const untracked = nulList(
     (await gitChecked(worktree, ['ls-files', '--others', '--exclude-standard', '-z'])).stdout,
@@ -721,7 +735,7 @@ export async function createAtomicCommit(
       '-c',
       `core.hooksPath=${emptyHooks}`,
       'update-ref',
-      branch,
+      expectedRef,
       commitHash,
       baseCommit,
     ]);
@@ -751,12 +765,12 @@ export async function createAtomicCommit(
     }
     return commitHash;
   } catch (error) {
-    const current = await git(worktree, ['rev-parse', '--verify', branch]);
+    const current = await git(worktree, ['rev-parse', '--verify', expectedRef]);
     const currentHash = current.exitCode === 0 ? current.stdout.trim() : '';
     if (currentHash && currentHash !== baseCommit) {
       const rollback = await git(
         worktree,
-        ['-c', `core.hooksPath=${emptyHooks}`, 'update-ref', branch, baseCommit, currentHash],
+        ['-c', `core.hooksPath=${emptyHooks}`, 'update-ref', expectedRef, baseCommit, currentHash],
         60_000,
       );
       if (rollback.exitCode !== 0) {

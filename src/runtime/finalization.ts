@@ -3,6 +3,7 @@ import { assertLaneCompatible } from '../acp.js';
 import { BridgeError, asBridgeError } from '../errors.js';
 import { fileAssertionEvidenceForCriterion, verifyFileAssertions } from '../file-assertions.js';
 import { transitionTask } from '../lifecycle.js';
+import { git } from '../repository.js';
 import {
   assertChangedFilesInScope,
   assertFileSizes,
@@ -354,6 +355,7 @@ export class FinalizationController implements FinalizationAccess {
     task = await this.dependencies.store.loadTask(taskId);
     let stagedByBridge = false;
     let commitCreated = false;
+    let createdCommitHash: string | undefined;
     try {
       await stageExplicitFiles(task.worktree, files);
       stagedByBridge = true;
@@ -392,7 +394,9 @@ export class FinalizationController implements FinalizationAccess {
           task.baseCommit,
           commitMessage,
           identity,
+          task.branch,
         );
+        createdCommitHash = commitHash;
         commitCreated = true;
       } catch (error) {
         const cause = asBridgeError(error);
@@ -413,11 +417,27 @@ export class FinalizationController implements FinalizationAccess {
       stagedByBridge = false;
     } catch (error) {
       const cause = asBridgeError(error);
-      if (commitCreated) {
+      if (commitCreated && createdCommitHash !== undefined) {
+        // The commit object exists but completion state could not be
+        // persisted: roll the task ref back to baseCommit (CAS) so no
+        // dangling task branch is left pointing at an unrecorded commit.
+        const rollback = await git(
+          task.worktree,
+          ['update-ref', task.branch, task.baseCommit, createdCommitHash],
+          60_000,
+        );
         throw new BridgeError(
           'commit_failed',
-          'Commit was created but completion state persistence failed',
-          { causeCode: cause.code, causeMessage: cause.message },
+          rollback.exitCode === 0
+            ? 'Commit was created but completion state persistence failed; task ref rolled back'
+            : 'Commit was created but completion state persistence failed and the task ref could not be rolled back',
+          {
+            causeCode: cause.code,
+            causeMessage: cause.message,
+            ...(rollback.exitCode !== 0
+              ? { rollbackFailed: true, rollbackStderr: rollback.stderr.slice(0, 16_384) }
+              : {}),
+          },
         );
       }
       if (stagedByBridge) {
