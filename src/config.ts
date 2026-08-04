@@ -23,6 +23,8 @@ export interface BridgeConfig {
   runGitHooks: boolean;
   /** Explicit escape hatch: run verification/scanner/hooks without an OS sandbox when none is available. */
   allowUnsandboxed: boolean;
+  /** Glob patterns (CODEX_REASONIX_ENV_ALLOWLIST) for env vars passed to the Reasonix child beyond the system baseline. */
+  envAllowlist: string[];
 }
 
 function parseReasoningEffort(value: string | undefined): ReasoningEffort {
@@ -71,6 +73,13 @@ function parseScanner(value: string | undefined): readonly [string, ...string[]]
   return parsed as [string, ...string[]];
 }
 
+function parseEnvAllowlist(value: string | undefined): string[] {
+  return (value ?? '')
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+}
+
 export function loadConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
   return {
     stateDir: defaultStateDir(),
@@ -87,6 +96,7 @@ export function loadConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig 
     leaseHeartbeatMs: 5_000,
     runGitHooks: process.env.CODEX_REASONIX_RUN_GIT_HOOKS === 'true',
     allowUnsandboxed: process.env.CODEX_REASONIX_ALLOW_UNSANDBOXED === 'true',
+    envAllowlist: parseEnvAllowlist(process.env.CODEX_REASONIX_ENV_ALLOWLIST),
     ...overrides,
   };
 }
@@ -98,6 +108,7 @@ export function configFingerprint(config: BridgeConfig): string {
     model: config.model,
     profile: config.profile,
     network: config.networkEnabled,
+    envAllowlist: config.envAllowlist,
   });
   return createHash('sha256').update(stable).digest('hex').slice(0, 24);
 }
