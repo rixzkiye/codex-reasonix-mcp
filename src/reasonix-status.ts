@@ -7,6 +7,10 @@ export const REASONIX_STATUS_UPDATE_METHOD = '_reasonix.io/session/status_update
 export const REASONIX_STEER_METHOD = '_reasonix.io/session/steer';
 export const REASONIX_STATUS_SCHEMA_VERSION = 1;
 
+// Reasonix >= 1.19.4 can mark usage figures as estimated (`usage.estimated`).
+// The flag is metadata-only and never persisted; accept it in both plausible
+// locations (per-usage-object and on the shared usage object) while keeping
+// `.strict()` everywhere else so genuinely unknown keys still fail closed.
 const usageSchema = z
   .object({
     promptTokens: z.number().int().nonnegative(),
@@ -18,6 +22,7 @@ const usageSchema = z
     estimatedCost: z.number().nonnegative().nullable(),
     currency: z.string().nullable(),
     usageSource: z.string().min(1),
+    estimated: z.boolean().optional(),
   })
   .strict();
 
@@ -62,7 +67,13 @@ export const reasonixStatusSchema = z
         networkEnabled: z.boolean(),
       })
       .strict(),
-    usage: z.object({ turn: usageSchema, cumulative: usageSchema }).strict(),
+    usage: z
+      .object({
+        turn: usageSchema,
+        cumulative: usageSchema,
+        estimated: z.boolean().optional(),
+      })
+      .strict(),
   })
   .strict();
 

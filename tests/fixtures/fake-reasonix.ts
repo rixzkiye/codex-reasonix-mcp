@@ -96,6 +96,8 @@ function status(sessionId: string) {
     estimatedCost: session.diagnosticLeak ? 0.0045 : session.complete ? 0.001 : null,
     currency: session.diagnosticLeak ? '$' : session.complete ? 'USD' : null,
     usageSource: session.diagnosticLeak ? 'PASSWORD=hunter2 /private/usage.txt' : 'executor',
+    // Reasonix >= 1.19.4 emits usage.estimated on status snapshots.
+    ...(fakeMode === 'status-estimated' ? { estimated: true } : {}),
   };
   return {
     schemaVersion: 1 as const,

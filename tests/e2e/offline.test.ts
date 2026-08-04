@@ -328,6 +328,32 @@ describe('offline Codex -> Reasonix -> Codex flow', () => {
     expect(controlCalls.mock.calls.some(([call]) => call.action === 'steer')).toBe(false);
   });
 
+  it('accepts Reasonix >= 1.19.4 usage.estimated status payloads end to end', async () => {
+    const repository = await createGitRepository();
+    const runtime = await runtimeFixture({
+      reasonixArgs: [
+        path.resolve('tests/fixtures/fake-reasonix.ts'),
+        '--fake-mode=status-estimated',
+      ],
+    });
+    const delegated = await runtime.delegate(
+      { task_id: 'status-estimated', contract: contractFixture(), worker_lane: 'deep' },
+      sandboxMeta(repository),
+    );
+    expect(delegated.state).toBe('review_required');
+    const completedView = await runtime.control(
+      {
+        task_id: 'status-estimated',
+        action: 'finalize',
+        review_summary: 'Scoped diff reviewed.',
+        approved_review_criteria: [],
+      },
+      sandboxMeta(repository),
+    );
+    expect(completedView.state).toBe('completed');
+    expect(completedView.commit_hash).toMatch(/^[0-9a-f]{40}$/);
+  });
+
   it('leaves both index and history untouched when verification fails', async () => {
     const repository = await createGitRepository();
     const runtime = await runtimeFixture();
