@@ -18,7 +18,7 @@ paths, LLM router, native-Windows implementation, or Codex source modification.
 ## Release status
 
 The last published stable npm release is `0.1.1`. This source tree is prepared
-as `0.2.0-rc.3`; that version is not available from npm until its GitHub
+as `0.2.0-rc.4`; that version is not available from npm until its GitHub
 prerelease and trusted-publishing workflow complete successfully. Official
 Reasonix `v1.19.0` remains the documented compatibility baseline, while runtime
 capability checks—not a version string—remain authoritative.
@@ -72,7 +72,7 @@ pnpm build
 codex mcp add reasonix-worker -- node /absolute/path/to/codex-reasonix-mcp/dist/index.js
 ```
 
-After `0.2.0-rc.3` is actually published, consumers can pin that exact version
+After `0.2.0-rc.4` is actually published, consumers can pin that exact version
 instead of relying on a moving dist-tag. Prereleases publish under `next`;
 stable releases publish under `latest`.
 

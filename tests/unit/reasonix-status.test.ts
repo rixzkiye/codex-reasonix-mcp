@@ -1,9 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  reasonixStatusSchema,
-  reasonixStatusUpdateSchema,
-} from '../../src/reasonix-status.js';
+import { reasonixStatusSchema, reasonixStatusUpdateSchema } from '../../src/reasonix-status.js';
 import { statusToUsage } from '../../src/runtime/shared.js';
 
 function v1190Status(overrides: Record<string, unknown> = {}): Record<string, unknown> {
