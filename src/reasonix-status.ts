@@ -18,6 +18,9 @@ const usageSchema = z
     estimatedCost: z.number().nonnegative().nullable(),
     currency: z.string().nullable(),
     usageSource: z.string().min(1),
+    // Reasonix >= 1.19.4 marks each turn/cumulative usage total as estimated.
+    // This compatibility-only metadata is projected out before persistence.
+    estimated: z.boolean().optional(),
   })
   .strict();
 

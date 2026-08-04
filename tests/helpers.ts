@@ -27,6 +27,24 @@ export async function createGitRepository(): Promise<string> {
   return directory;
 }
 
+/**
+ * Snapshot-bound finalize approval: echo the reviewed snapshot (revision +
+ * tree hash) the client actually inspected. Accepts both the wire view
+ * (review_revision / review_tree_hash) and the task record shape. Stale
+ * approvals are rejected by the bridge (PR 3).
+ */
+export function approvalFor(task: {
+  reviewRevision?: number;
+  reviewTreeHash?: string;
+  review_revision?: number;
+  review_tree_hash?: string;
+}): { expected_review_revision: number; expected_review_tree_hash: string } {
+  return {
+    expected_review_revision: task.reviewRevision ?? task.review_revision ?? 0,
+    expected_review_tree_hash: task.reviewTreeHash ?? task.review_tree_hash ?? '',
+  };
+}
+
 export function contractFixture(overrides: Partial<TaskContractV1> = {}): TaskContractV1 {
   return {
     schema_version: 1,

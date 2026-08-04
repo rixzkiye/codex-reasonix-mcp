@@ -14,6 +14,7 @@ import {
   type RuntimeCallContext,
 } from '../../src/runtime.js';
 import { createMcpServer } from '../../src/server.js';
+import { controlInputSchema, parseControlInput } from '../../src/tool-schemas.js';
 import { contractFixture } from '../helpers.js';
 
 // Pinned compatibility target: Codex CLI 0.146.0 (commit e363b08c), whose
@@ -131,7 +132,12 @@ describe('stable MCP surface', () => {
       expect(instructions).toContain('explicit user approval');
       expect(instructions).toContain('lowest adequate reasoning_effort');
       expect(instructions).toContain('worker_lane=fast');
+      expect(instructions).toContain('one focused preflight');
+      expect(instructions).toContain('write_scope is already an exclusive allowlist');
       expect(instructions).toContain('required_review_criteria');
+      expect(instructions).toContain('review_revision into expected_review_revision');
+      expect(instructions).toContain('review_tree_hash into expected_review_tree_hash');
+      expect(instructions).toContain('never copy the diff manually');
       expect(instructions).toContain('cherry-pick it explicitly after review');
       expect(instructions).toContain('codex/sandbox-state-meta');
       expect(instructions).toContain('Never push, merge, or publish');
@@ -157,6 +163,9 @@ describe('stable MCP surface', () => {
       expect(delegate?.description).toContain('explicit user approval');
       expect(delegate?.description).toContain('wait_mode=review');
       expect(delegate?.description).toContain('lowest reasoning_effort adequate');
+      expect(delegate?.description).toContain('do one focused preflight and delegate directly');
+      expect(delegate?.description).toContain('write_scope is the exclusive write allowlist');
+      expect(delegate?.description).toContain('never use **/*');
       const delegateProperties = schemaObject(delegate?.inputSchema.properties, 'delegate');
       expect(
         schemaObject(delegateProperties.reasoning_effort, 'delegate.reasoning_effort'),
@@ -186,6 +195,13 @@ describe('stable MCP surface', () => {
       expect(pathBase.description).toContain('Defaults to cwd');
       const contract = schemaObject(delegateProperties.contract, 'delegate.contract');
       const contractProperties = schemaObject(contract.properties, 'delegate.contract.properties');
+      expect(
+        schemaObject(contractProperties.write_scope, 'delegate.contract.write_scope').description,
+      ).toContain('Exclusive repository-relative write allowlist');
+      expect(
+        schemaObject(contractProperties.forbidden_scope, 'delegate.contract.forbidden_scope')
+          .description,
+      ).toContain('never use a catch-all pattern');
       const verification = schemaObject(
         contractProperties.verification,
         'delegate.contract.verification',
@@ -277,6 +293,9 @@ describe('stable MCP surface', () => {
       });
       expect(control?.description).toContain('created by reasonix_delegate');
       expect(control?.description).toContain('finalize waits for a committed terminal result');
+      expect(control?.description).toContain('review_revision to expected_review_revision');
+      expect(control?.description).toContain('review_tree_hash to expected_review_tree_hash');
+      expect(control?.description).toContain('never copy the diff manually');
       const controlProperties = schemaObject(control?.inputSchema.properties, 'control');
       expect(Object.keys(controlProperties).sort()).toEqual(
         [
@@ -285,6 +304,8 @@ describe('stable MCP surface', () => {
           'approved_review_criteria',
           'commit_message',
           'decision',
+          'expected_review_revision',
+          'expected_review_tree_hash',
           'interaction_id',
           'message',
           'option_id',
@@ -304,6 +325,18 @@ describe('stable MCP surface', () => {
       expect(
         schemaObject(controlProperties.wait_timeout_seconds, 'control.wait_timeout_seconds'),
       ).toMatchObject({ minimum: 0, maximum: 600 });
+      expect(
+        schemaObject(
+          controlProperties.expected_review_revision,
+          'control.expected_review_revision',
+        ),
+      ).toMatchObject({ type: 'integer', minimum: 0 });
+      expect(
+        schemaObject(
+          controlProperties.expected_review_tree_hash,
+          'control.expected_review_tree_hash',
+        ),
+      ).toMatchObject({ type: 'string', pattern: '^[0-9a-f]{40}$' });
       const controlOutputProperties = schemaObject(
         schemaObject(control?.outputSchema, 'control.outputSchema').properties,
         'control.outputSchema.properties',
@@ -359,8 +392,19 @@ describe('stable MCP surface', () => {
       const invalidInputs = [
         { task_id: 'task-1', action: 'steer' },
         { task_id: 'task-1', action: 'respond', interaction_id: 'interaction-1' },
-        { task_id: 'task-1', action: 'finalize', review_summary: 'Reviewed' },
+        {
+          task_id: 'task-1',
+          action: 'finalize',
+          review_summary: 'Reviewed',
+          approved_review_criteria: [],
+        },
         { task_id: 'task-1', action: 'cancel', message: 'not valid for cancel' },
+        {
+          task_id: 'task-1',
+          action: 'cancel',
+          expected_review_revision: 1,
+          expected_review_tree_hash: 'a'.repeat(40),
+        },
       ];
 
       for (const args of invalidInputs) {
@@ -383,7 +427,112 @@ describe('stable MCP surface', () => {
         });
         expect(result.structuredContent).toBeUndefined();
       }
+
+      const malformedWireInputs = [
+        {
+          task_id: 'task-1',
+          action: 'finalize',
+          review_summary: 'Reviewed',
+          approved_review_criteria: [],
+          expected_review_revision: -1,
+          expected_review_tree_hash: 'a'.repeat(40),
+        },
+        {
+          task_id: 'task-1',
+          action: 'finalize',
+          review_summary: 'Reviewed',
+          approved_review_criteria: [],
+          expected_review_revision: 1,
+          expected_review_tree_hash: 'not-a-tree-hash',
+        },
+      ];
+      for (const args of malformedWireInputs) {
+        const rawResult: unknown = await client.callTool({
+          name: 'reasonix_control',
+          arguments: args,
+        });
+        const result = schemaObject(rawResult, 'callTool result');
+        expect(result.isError).toBe(true);
+        if (!Array.isArray(result.content)) throw new Error('Expected tool result content');
+        const content = schemaObject(result.content[0], 'callTool result content');
+        expect(content.text).toEqual(expect.stringContaining('MCP error -32602'));
+      }
       expect(control).not.toHaveBeenCalled();
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it('keeps every action-specific domain input inside the flat MCP wire schema', () => {
+    const validDomainInputs = [
+      { task_id: 'task-1', action: 'steer', message: 'Continue with the scoped repair.' },
+      {
+        task_id: 'task-1',
+        action: 'respond',
+        interaction_id: 'interaction-1',
+        decision: 'allow',
+        option_id: 'allow_once',
+      },
+      { task_id: 'task-1', action: 'cancel' },
+      {
+        task_id: 'task-1',
+        action: 'finalize',
+        review_summary: 'Reviewed the current snapshot.',
+        approved_review_criteria: ['ac_review'],
+        expected_review_revision: 2,
+        expected_review_tree_hash: 'b'.repeat(40),
+      },
+      { task_id: 'task-1', action: 'close' },
+    ] as const;
+
+    for (const input of validDomainInputs) {
+      const domainValue = parseControlInput(input);
+      expect(controlInputSchema.safeParse(domainValue).success).toBe(true);
+    }
+  });
+
+  it('delivers finalize with a valid review snapshot through MCP to the runtime', async () => {
+    const control = vi.fn((input: unknown) => {
+      void input;
+      return Promise.resolve({
+        ...TASK_VIEW,
+        state: 'completed',
+        phase: 'completed',
+        commit_hash: 'd'.repeat(40),
+        integration_command: `git cherry-pick ${'d'.repeat(40)}`,
+      });
+    });
+    const runtime = {
+      delegate: () => Promise.resolve({}),
+      control,
+      inspect: () => Promise.resolve({}),
+    } as unknown as BridgeRuntime;
+    const server = createMcpServer(runtime);
+    const client = new Client({ name: 'protocol-finalize-test', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    try {
+      const result = await client.callTool({
+        name: 'reasonix_control',
+        arguments: {
+          task_id: 'task-1',
+          action: 'finalize',
+          review_summary: 'Reviewed the current snapshot.',
+          approved_review_criteria: [],
+          expected_review_revision: 3,
+          expected_review_tree_hash: 'c'.repeat(40),
+        },
+      });
+
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent).toMatchObject({ state: 'completed' });
+      expect(control).toHaveBeenCalledTimes(1);
+      expect(control.mock.calls[0]?.[0]).toMatchObject({
+        action: 'finalize',
+        expected_review_revision: 3,
+        expected_review_tree_hash: 'c'.repeat(40),
+      });
     } finally {
       await client.close();
       await server.close();

@@ -7,6 +7,7 @@ import type { BridgeConfig } from './config.js';
 import { runChecked, runCommand } from './command.js';
 import { BRIDGE_ERROR_CODES } from './errors.js';
 import { BridgeRuntime } from './runtime.js';
+import { detectSandbox } from './sandbox-runner.js';
 import { StateStore } from './state.js';
 import type { JournalEvent, TaskRecord, TaskStatus, UsageTotals } from './types.js';
 
@@ -574,12 +575,15 @@ export async function runDeepDoctor(
         items.some((event) => event.type === 'command_postflight_failed'),
     );
     usage = (await collectDeepEvidence(runtime, fixture, proofs, diagnostics, false)) ?? usage;
+    const doctorTask = await runtime.store.loadTask('deep-doctor');
     await runtime.control(
       {
         task_id: 'deep-doctor',
         action: 'finalize',
         review_summary: 'Deep doctor reviewed the bounded isolated diff.',
         approved_review_criteria: [],
+        expected_review_revision: doctorTask.reviewRevision ?? 0,
+        expected_review_tree_hash: doctorTask.reviewTreeHash ?? '',
       },
       sandboxMeta(fixture.repository),
     );
@@ -772,6 +776,21 @@ export async function runDoctor(
     ok: await executableOnPath(sandboxCommand),
     detail: `Sandbox executable: ${sandboxCommand}`,
     required: true,
+  });
+  const sandbox = await detectSandbox();
+  checks.push({
+    name: 'command_sandbox',
+    ok: sandbox.available,
+    detail: sandbox.available
+      ? `Command sandbox engine: ${sandbox.engine} (verification / secret scanner / Git hooks)`
+      : `Command sandbox unavailable: ${sandbox.reason ?? 'unknown'}`,
+    required: true,
+  });
+  checks.push({
+    name: 'sandbox_posture',
+    ok: !config.allowUnsandboxed,
+    detail: `run_git_hooks=${String(config.runGitHooks)} allow_unsandboxed=${String(config.allowUnsandboxed)} env_allowlist_entries=${String(config.envAllowlist.length)}`,
+    required: false,
   });
 
   const state = new StateStore(config.stateDir);

@@ -98,6 +98,8 @@ describe('v0.1.1 runtime characterization', () => {
       'inspectedAfterPause',
       'interactions',
       'networkEnabled',
+      'pauseReasonHash',
+      'pauseRevision',
       'phase',
       'reasonixStatusSequence',
       'repairActive',
@@ -162,7 +164,7 @@ describe('v0.1.1 runtime characterization', () => {
     expect(task.createdAt).toBe(task.updatedAt);
   });
 
-  it('recovers interrupted tasks and marks a paused task inspected before returning it', async () => {
+  it('recovers interrupted tasks and leaves paused tasks unmutated by inspect', async () => {
     const stateDir = await mkdtemp(path.join(os.tmpdir(), 'codex-reasonix-runtime-recovery-'));
     const first = await runtimeFixture(stateDir);
     const contract = parseTaskContract(contractFixture());
@@ -202,11 +204,17 @@ describe('v0.1.1 runtime characterization', () => {
           state: 'paused',
           phase: 'restart_recovery',
           reason: 'Bridge restart detected; inspect before explicit resume',
+          pause_revision: 1,
         },
       },
     });
+    const statusSection = (result.sections as { status: { pause_reason_hash?: string } }).status;
+    expect(statusSection.pause_reason_hash).toMatch(/^[0-9a-f]{64}$/);
+    // Inspect is read-only: it must not acknowledge the pause by itself; the
+    // client acknowledges it by echoing the pause tokens on resume.
     expect(await recovered.store.loadTask('recover-task')).toMatchObject({
-      inspectedAfterPause: true,
+      inspectedAfterPause: false,
+      pauseRevision: 1,
     });
     const events = (result.sections as { events: Array<{ type: string }> }).events;
     expect(events.map((event) => event.type)).toEqual(['task_created', 'restart_recovery']);

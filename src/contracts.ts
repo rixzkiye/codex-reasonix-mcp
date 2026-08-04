@@ -65,8 +65,20 @@ export const taskContractSchema = z
       .array(z.object({ path: z.string().min(1).max(1_024), reason: textSchema }).strict())
       .max(1_000)
       .default([]),
-    write_scope: z.array(z.string().min(1).max(1_024)).min(1).max(1_000),
-    forbidden_scope: z.array(z.string().min(1).max(1_024)).max(1_000).default([]),
+    write_scope: z
+      .array(z.string().min(1).max(1_024))
+      .min(1)
+      .max(1_000)
+      .describe(
+        'Exclusive repository-relative write allowlist; every path not listed is already denied.',
+      ),
+    forbidden_scope: z
+      .array(z.string().min(1).max(1_024))
+      .max(1_000)
+      .default([])
+      .describe(
+        'Optional sensitive carve-outs inside broader write scopes; never use a catch-all pattern that matches a concrete write_scope target.',
+      ),
     invariants: z.array(textSchema).max(1_000).default([]),
     non_goals: z.array(textSchema).max(1_000).default([]),
     acceptance_criteria: z.array(acceptanceCriterionSchema).min(1).max(1_000),
@@ -492,6 +504,33 @@ function lintRawTaskContract(input: unknown): ContractLintIssue[] {
     if (!Array.isArray(contract[field])) continue;
     contract[field].forEach((value, index) => {
       if (typeof value === 'string') lintPath(value, allowDot, `${field}.${index}`, issues);
+    });
+  }
+  const writeScope = Array.isArray(contract.write_scope) ? contract.write_scope : [];
+  const forbiddenScope = Array.isArray(contract.forbidden_scope) ? contract.forbidden_scope : [];
+  if (writeScope.length > 0 && forbiddenScope.length > 0) {
+    writeScope.forEach((writeValue) => {
+      if (typeof writeValue !== 'string' || hasGlob(writeValue)) return;
+      let writePath: string;
+      try {
+        writePath = normalizeRepositoryPath(writeValue, 'write_scope');
+      } catch {
+        return;
+      }
+      forbiddenScope.forEach((forbiddenValue, forbiddenIndex) => {
+        if (typeof forbiddenValue !== 'string') return;
+        let forbiddenPattern: string;
+        try {
+          forbiddenPattern = normalizeRepositoryPath(forbiddenValue, 'forbidden_scope');
+        } catch {
+          return;
+        }
+        if (!patternMatches(forbiddenPattern, writePath)) return;
+        issues.push({
+          path: `forbidden_scope.${forbiddenIndex}`,
+          message: `forbidden_scope matches concrete write_scope target ${writePath}; write_scope already denies every unlisted path`,
+        });
+      });
     });
   }
   for (const field of ['verification', 'allowed_commands'] as const) {

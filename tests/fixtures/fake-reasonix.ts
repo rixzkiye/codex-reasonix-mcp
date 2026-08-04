@@ -96,6 +96,7 @@ function status(sessionId: string) {
     estimatedCost: session.diagnosticLeak ? 0.0045 : session.complete ? 0.001 : null,
     currency: session.diagnosticLeak ? '$' : session.complete ? 'USD' : null,
     usageSource: session.diagnosticLeak ? 'PASSWORD=hunter2 /private/usage.txt' : 'executor',
+    ...(fakeMode === 'status-estimated' ? { estimated: true } : {}),
   };
   return {
     schemaVersion: 1 as const,
@@ -261,6 +262,17 @@ const app = acp
     session.running = true;
     session.complete = false;
     session.promptCount += 1;
+    if (fakeMode === 'env-dump') {
+      // Dump the worker-side environment (inside the runtime-metadata
+      // namespace so it never enters changed-file lists) for allowlist tests.
+      const dumpDir = path.join(session.cwd, '.reasonix');
+      await mkdir(dumpDir, { recursive: true });
+      await writeFile(
+        path.join(dumpDir, 'env-dump.json'),
+        JSON.stringify(process.env, null, 2),
+        'utf8',
+      );
+    }
     if (fakeMode === 'fast-goal') session.mode = 'goal';
     if (fakeMode === 'fast-autoresearch') {
       await client.notify(acp.methods.client.session.update, {

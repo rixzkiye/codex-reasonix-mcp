@@ -9,7 +9,13 @@ import { loadConfig, type BridgeConfig } from '../../src/config.js';
 import type { ReasonixStatus } from '../../src/reasonix-status.js';
 import { BridgeRuntime } from '../../src/runtime.js';
 import type { TaskRecord } from '../../src/types.js';
-import { contractFixture, createGitRepository, sandboxMeta, waitUntil } from '../helpers.js';
+import {
+  approvalFor,
+  contractFixture,
+  createGitRepository,
+  sandboxMeta,
+  waitUntil,
+} from '../helpers.js';
 
 const runtimes: BridgeRuntime[] = [];
 
@@ -295,6 +301,7 @@ describe('offline Codex -> Reasonix -> Codex flow', () => {
       {
         task_id: 'offline-success',
         action: 'finalize',
+        ...approvalFor(review),
         review_summary: 'Scoped diff reviewed.',
         approved_review_criteria: [],
       },
@@ -328,6 +335,65 @@ describe('offline Codex -> Reasonix -> Codex flow', () => {
     expect(controlCalls.mock.calls.some(([call]) => call.action === 'steer')).toBe(false);
   });
 
+  it('hands the worker an allowlisted environment instead of the full host env', async () => {
+    const repository = await createGitRepository();
+    const runtime = await runtimeFixture({
+      reasonixArgs: [path.resolve('tests/fixtures/fake-reasonix.ts'), '--fake-mode=env-dump'],
+      envAllowlist: ['MY_ALLOWED_KEY'],
+    });
+    vi.stubEnv('MY_ALLOWED_KEY', 'allowed-value');
+    vi.stubEnv('MY_AMBIENT_SECRET', 'must-not-leak');
+    try {
+      const delegated = await runtime.delegate(
+        { task_id: 'env-allowlist', contract: contractFixture(), worker_lane: 'deep' },
+        sandboxMeta(repository),
+      );
+      expect(delegated.state).toBe('review_required');
+      const task = await runtime.store.loadTask('env-allowlist');
+      const dumpPath = path.join(task.worktree, '.reasonix', 'env-dump.json');
+      const dump = JSON.parse(await readFile(dumpPath, 'utf8')) as Record<string, string>;
+      expect(dump.MY_ALLOWED_KEY).toBe('allowed-value');
+      expect(dump.MY_AMBIENT_SECRET).toBeUndefined();
+      // system baseline reaches the worker
+      expect(dump.HOME).toBeDefined();
+      expect(dump.PATH).toBeDefined();
+      expect(dump.LANG).toBeDefined();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('accepts Reasonix >= 1.19.4 usage metadata without leaking it to task state or views', async () => {
+    const repository = await createGitRepository();
+    const runtime = await runtimeFixture({
+      reasonixArgs: [
+        path.resolve('tests/fixtures/fake-reasonix.ts'),
+        '--fake-mode=status-estimated',
+      ],
+    });
+    const delegated = await runtime.delegate(
+      { task_id: 'status-estimated', contract: contractFixture(), worker_lane: 'deep' },
+      sandboxMeta(repository),
+    );
+    expect(delegated).toMatchObject({ state: 'review_required' });
+    expect(delegated.usage).not.toHaveProperty('estimated');
+
+    const review = await runtime.store.loadTask('status-estimated');
+    expect(review.usage).not.toHaveProperty('estimated');
+    const completed = await runtime.control(
+      {
+        task_id: 'status-estimated',
+        action: 'finalize',
+        ...approvalFor(review),
+        review_summary: 'Scoped diff reviewed.',
+        approved_review_criteria: [],
+      },
+      sandboxMeta(repository),
+    );
+    expect(completed.state).toBe('completed');
+    expect(completed.commit_hash).toMatch(/^[0-9a-f]{40}$/);
+  });
+
   it('leaves both index and history untouched when verification fails', async () => {
     const repository = await createGitRepository();
     const runtime = await runtimeFixture();
@@ -352,6 +418,7 @@ describe('offline Codex -> Reasonix -> Codex flow', () => {
         {
           task_id: review.taskId,
           action: 'finalize',
+          ...approvalFor(review),
           review_summary: 'Diff reviewed.',
           approved_review_criteria: [],
         },
@@ -390,6 +457,7 @@ describe('offline Codex -> Reasonix -> Codex flow', () => {
         {
           task_id: review.taskId,
           action: 'finalize',
+          ...approvalFor(review),
           review_summary: 'Reviewed the whitespace regression fixture.',
           approved_review_criteria: [],
         },
@@ -423,6 +491,7 @@ describe('offline Codex -> Reasonix -> Codex flow', () => {
       {
         task_id: repairable.taskId,
         action: 'finalize',
+        ...approvalFor(repaired),
         review_summary: 'Reviewed the corrected worker diff.',
         approved_review_criteria: [],
       },
@@ -434,7 +503,7 @@ describe('offline Codex -> Reasonix -> Codex flow', () => {
 
   it('uses commit_failed only after the commit transaction starts', async () => {
     const repository = await createGitRepository();
-    const runtime = await runtimeFixture();
+    const runtime = await runtimeFixture({ runGitHooks: true });
     await runtime.delegate(
       { task_id: 'commit-hook-failure', contract: contractFixture() },
       sandboxMeta(repository),
@@ -453,6 +522,7 @@ describe('offline Codex -> Reasonix -> Codex flow', () => {
         {
           task_id: review.taskId,
           action: 'finalize',
+          ...approvalFor(review),
           review_summary: 'Reviewed before exercising the commit transaction.',
           approved_review_criteria: [],
         },
@@ -507,6 +577,7 @@ describe('offline Codex -> Reasonix -> Codex flow', () => {
         {
           task_id: review.taskId,
           action: 'finalize',
+          ...approvalFor(review),
           review_summary: 'This must fail before bridge verification.',
           approved_review_criteria: [],
         },
@@ -539,6 +610,7 @@ describe('offline Codex -> Reasonix -> Codex flow', () => {
         {
           task_id: 'source-collision-finalize',
           action: 'finalize',
+          ...approvalFor(await runtime.store.loadTask('source-collision-finalize')),
           review_summary: 'Scoped diff reviewed.',
           approved_review_criteria: [],
         },
@@ -589,6 +661,7 @@ describe('offline Codex -> Reasonix -> Codex flow', () => {
         {
           task_id: 'source-moved-verification',
           action: 'finalize',
+          ...approvalFor(await runtime.store.loadTask('source-moved-verification')),
           review_summary: 'Scoped diff reviewed.',
           approved_review_criteria: [],
           wait_timeout_seconds: 0,
@@ -652,6 +725,7 @@ describe('offline Codex -> Reasonix -> Codex flow', () => {
           {
             task_id: taskId,
             action: 'finalize',
+            ...approvalFor(await runtime.store.loadTask(taskId)),
             review_summary: 'Scoped diff reviewed.',
             approved_review_criteria: [],
             wait_timeout_seconds: 0,
@@ -830,7 +904,7 @@ describe('offline Codex -> Reasonix -> Codex flow', () => {
     const repository = await createGitRepository();
     const runtime = await runtimeFixture();
     const descendantMarker = path.join(repository, 'cancelled-descendant-survived');
-    const descendant = `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(descendantMarker)}, 'unsafe'), 700)`;
+    const descendant = `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(descendantMarker)}, 'unsafe'), 2500)`;
     const slowVerification = [
       "const {spawn}=require('node:child_process')",
       `spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:'ignore'})`,
@@ -858,6 +932,7 @@ describe('offline Codex -> Reasonix -> Codex flow', () => {
         {
           task_id: 'cancel-verification',
           action: 'finalize',
+          ...approvalFor(await runtime.store.loadTask('cancel-verification')),
           review_summary: 'Reviewed before cancellation test.',
           approved_review_criteria: [],
           wait_timeout_seconds: 0,
@@ -874,7 +949,9 @@ describe('offline Codex -> Reasonix -> Codex flow', () => {
       undefined,
     );
     expect(cancelled.state).toBe('cancelled');
-    await new Promise((resolve) => setTimeout(resolve, 900));
+    // Longer than the descendant's 2500ms marker timer: if the descendant
+    // survived the cancellation, the marker would already exist by now.
+    await new Promise((resolve) => setTimeout(resolve, 3_200));
     const task = await runtime.store.loadTask('cancel-verification');
     expect(task.status).toBe('cancelled');
     expect(task.commitHash).toBeUndefined();
@@ -917,6 +994,7 @@ describe('offline Codex -> Reasonix -> Codex flow', () => {
         {
           task_id: 'post-verify-size',
           action: 'finalize',
+          ...approvalFor(await runtime.store.loadTask('post-verify-size')),
           review_summary: 'Reviewed the small worker diff.',
           approved_review_criteria: [],
         },
@@ -962,6 +1040,7 @@ describe('offline Codex -> Reasonix -> Codex flow', () => {
         {
           task_id: 'shutdown-finalize',
           action: 'finalize',
+          ...approvalFor(await runtime.store.loadTask('shutdown-finalize')),
           review_summary: 'Reviewed before shutdown.',
           approved_review_criteria: [],
           wait_timeout_seconds: 0,

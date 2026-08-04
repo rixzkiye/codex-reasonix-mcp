@@ -18,7 +18,7 @@ paths, LLM router, native-Windows implementation, or Codex source modification.
 ## Release status
 
 The last published stable npm release is `0.1.1`. This source tree is prepared
-as `0.2.0-rc.3`; that version is not available from npm until its GitHub
+as `0.2.0-rc.4`; that version is not available from npm until its GitHub
 prerelease and trusted-publishing workflow complete successfully. Official
 Reasonix `v1.19.0` remains the documented compatibility baseline, while runtime
 capability checks—not a version string—remain authoritative.
@@ -31,11 +31,30 @@ capability checks—not a version string—remain authoritative.
 - Linux, macOS, or Windows through WSL; native Windows is rejected
 - Reasonix v1.19.0 or a compatible newer build with ACP v1 supervisor/status
   capabilities and static command metadata v1
-- Bubblewrap on Linux/WSL or Seatbelt on macOS
+- Bubblewrap on Linux/WSL or Seatbelt on macOS (required: verification, the
+  secret scanner, and Git hooks execute inside the OS command sandbox and
+  fail closed when no engine is available)
 - A configured Reasonix provider exposing the selected model
 
 Reasonix, provider credentials, and provider billing remain user-managed. This
 package neither downloads nor bundles Reasonix.
+
+## Security posture
+
+Repository-controlled content never executes unsandboxed: verification
+commands, the external secret scanner, and (when explicitly enabled) Git hooks
+run inside a network-disabled, filesystem-restricted OS sandbox with hidden
+credential stores. Git hooks are **off by default**
+(`CODEX_REASONIX_RUN_GIT_HOOKS=true` re-enables them through the sandbox).
+The Reasonix worker receives an explicitly allowlisted environment
+(`CODEX_REASONIX_ENV_ALLOWLIST`) instead of the host environment; injection
+variables are hard-denied. Finalize approvals and pause acknowledgments are
+bound to reviewed-snapshot and pause tokens, journal appends are
+crash-consistent, and the bridge commit requires the exact task branch.
+
+See [docs/security.md](docs/security.md) for the threat model, the proof
+matrix, and the configuration knobs. The matrix gates run on Linux and macOS
+in CI.
 
 ## Install for Codex
 
@@ -53,7 +72,7 @@ pnpm build
 codex mcp add reasonix-worker -- node /absolute/path/to/codex-reasonix-mcp/dist/index.js
 ```
 
-After `0.2.0-rc.3` is actually published, consumers can pin that exact version
+After `0.2.0-rc.4` is actually published, consumers can pin that exact version
 instead of relying on a moving dist-tag. Prereleases publish under `next`;
 stable releases publish under `latest`.
 
@@ -109,7 +128,9 @@ from `codex/sandbox-state-meta`; no model-provided repository path is accepted.
 
 The normal success path is exactly two long-running calls: one delegate with
 the default `wait_mode: "review"`, then one `finalize` that waits for a terminal
-result and returns the worker commit hash. New tasks run on the `worker_lane:
+result and returns the worker commit hash. Finalize echoes the reviewed
+snapshot by mapping `review_revision` to `expected_review_revision` and
+`review_tree_hash` to `expected_review_tree_hash`. New tasks run on the `worker_lane:
 "fast"` (direct edits in Reasonix economy + normal mode, no Goal/AutoResearch/
 subagents, 600-second default deadline); choose `worker_lane: "deep"` only for
 explicitly long-horizon Delivery + Goal work (3,600-second default).
@@ -124,6 +145,11 @@ again without changing its stored execution profile. There is no hard worker
 token ceiling. `path_base` defaults to the
 invocation `cwd`; use `repository` only for legacy repository-root path
 semantics. Inspect/steer are recovery tools, not happy-path polling steps.
+
+If finalization fails, keep the retained task at review, inspect or repair it
+there, and finalize again using the newly reviewed snapshot. Do not manually
+copy the diff into the source checkout and do not close the task as a recovery
+shortcut.
 
 Completion creates a commit on the retained worker branch. It does not
 integrate the caller's checkout: after reviewing the returned hash, Codex may

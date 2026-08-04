@@ -15,6 +15,8 @@ export interface DelegateInput {
   execution_timeout_seconds?: number;
   wait_mode?: 'review' | 'background';
   wait_timeout_seconds?: number;
+  pause_revision?: number;
+  pause_reason_hash?: string;
   path_base?: 'cwd' | 'repository';
 }
 
@@ -34,6 +36,8 @@ export type ControlInput =
       action: 'finalize';
       review_summary: string;
       approved_review_criteria: string[];
+      expected_review_revision: number;
+      expected_review_tree_hash: string;
       commit_message?: string;
       wait_timeout_seconds?: number;
     }

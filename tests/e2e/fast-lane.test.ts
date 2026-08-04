@@ -7,7 +7,13 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { runCommand } from '../../src/command.js';
 import { loadConfig, type BridgeConfig } from '../../src/config.js';
 import { BridgeRuntime } from '../../src/runtime.js';
-import { contractFixture, createGitRepository, sandboxMeta, waitUntil } from '../helpers.js';
+import {
+  approvalFor,
+  contractFixture,
+  createGitRepository,
+  sandboxMeta,
+  waitUntil,
+} from '../helpers.js';
 
 const runtimes: BridgeRuntime[] = [];
 
@@ -104,6 +110,7 @@ describe('fast lane worker', () => {
       {
         task_id: 'fast-happy-path',
         action: 'finalize',
+        ...approvalFor(delegated),
         review_summary: 'Scoped fast-lane diff reviewed.',
         approved_review_criteria: ['ac_review', 'ac_result'],
         commit_message: 'fast-happy-path: create result.txt',
@@ -277,6 +284,7 @@ describe('fast lane worker', () => {
       {
         task_id: 'fast-repair',
         action: 'finalize',
+        ...approvalFor(repaired),
         review_summary: 'Repaired diff reviewed.',
         approved_review_criteria: ['ac_review'],
       },
@@ -317,6 +325,7 @@ describe('fast lane worker', () => {
           task_id: 'fast-hand-repair',
           action: 'finalize',
           review_summary: 'Reviewed before the snapshot mismatch.',
+          ...approvalFor(first),
           approved_review_criteria: ['ac_review'],
         },
         sandboxMeta(repository),
@@ -339,6 +348,7 @@ describe('fast lane worker', () => {
           task_id: 'fast-hand-repair',
           action: 'finalize',
           review_summary: 'Reviewed the hand-repaired bytes.',
+          ...approvalFor(repaired),
           approved_review_criteria: ['ac_review'],
         },
         sandboxMeta(repository),
@@ -352,6 +362,7 @@ describe('fast lane worker', () => {
         task_id: 'fast-hand-repair',
         action: 'finalize',
         review_summary: 'Reviewed the final bytes.',
+        ...approvalFor(reBaselined),
         approved_review_criteria: ['ac_review'],
       },
       sandboxMeta(repository),
