@@ -28,7 +28,12 @@ import {
   type ReasonixStatus,
   type ReasonixStatusUpdate,
 } from './reasonix-status.js';
-import type { RepositoryIdentity } from './types.js';
+import {
+  DEFAULT_EXECUTION_TIMEOUT_SECONDS,
+  type ReasoningEffort,
+  type RepositoryIdentity,
+  type WorkerLane,
+} from './types.js';
 import { VERSION } from './version.js';
 
 export interface ReasonixCallbacks {
@@ -51,6 +56,11 @@ interface SessionRuntime {
   worktree: string;
   activePrompt: boolean;
   lastSequence: number;
+  requestedEffort: ReasoningEffort;
+  workerLane: WorkerLane;
+  executionTimeoutSeconds: number;
+  deadline?: ReturnType<typeof setTimeout>;
+  completionReported: boolean;
 }
 
 function extensionMeta(response: InitializeResponse): unknown {
@@ -82,7 +92,7 @@ function desiredModel(options: SessionConfigOption[], model: string): string {
   );
   if (!match) {
     throw new BridgeError(
-      'reasonix_unavailable',
+      'reasonix_incompatible',
       `Required Reasonix model is unavailable: ${model}`,
       {
         available: values.map((item) => item.value),
@@ -92,14 +102,26 @@ function desiredModel(options: SessionConfigOption[], model: string): string {
   return match.value;
 }
 
-function desiredEffort(options: SessionConfigOption[]): string | undefined {
+export function desiredEffort(
+  options: SessionConfigOption[],
+  requested: ReasoningEffort,
+): { configId: string; value: ReasoningEffort } {
   const selector = findOption(options, 'effort') ?? findOption(options, 'thought_level');
-  if (!selector) return undefined;
-  const values = flattenOptions(selector).map((item) => item.value);
-  for (const candidate of ['max', 'high', 'medium', 'low', 'minimal', 'auto']) {
-    if (values.includes(candidate)) return candidate;
+  if (!selector) {
+    throw new BridgeError(
+      'reasonix_incompatible',
+      'Reasonix did not advertise reasoning effort selection',
+    );
   }
-  return values.includes('auto') ? 'auto' : undefined;
+  const values = flattenOptions(selector).map((item) => item.value);
+  if (!values.includes(requested)) {
+    throw new BridgeError(
+      'reasonix_incompatible',
+      `Requested Reasonix reasoning effort is unavailable: ${requested}`,
+      { requested, available: values },
+    );
+  }
+  return { configId: selector.id, value: requested };
 }
 
 function inheritedReasonixEnvironment(): NodeJS.ProcessEnv {
@@ -109,14 +131,86 @@ function inheritedReasonixEnvironment(): NodeJS.ProcessEnv {
   return env;
 }
 
+export const REASONIX_IDENTICAL_DENIAL_LIMIT = 3;
+
+export function assertReasonixEffort(
+  status: ReasonixStatus,
+  requestedEffort: ReasoningEffort,
+): void {
+  if (status.effort !== requestedEffort) {
+    throw new BridgeError(
+      'reasonix_incompatible',
+      'Reasonix effective reasoning effort changed unexpectedly',
+      { requestedEffort, effectiveEffort: status.effort },
+    );
+  }
+}
+
+export function laneWorkMode(
+  workMode: ReasonixStatus['workMode'],
+  workerLane: WorkerLane,
+): boolean {
+  return workerLane === 'fast' ? workMode === 'economy' : workMode === 'delivery';
+}
+
+export function laneSessionMode(mode: ReasonixStatus['mode'], workerLane: WorkerLane): boolean {
+  return workerLane === 'fast' ? mode === 'normal' : mode === 'goal';
+}
+
+/**
+ * Lightweight lane/effort posture check for statuses observed outside session
+ * creation/resume (repair steering and finalization).
+ */
+export function assertLaneCompatible(
+  status: ReasonixStatus,
+  workerLane: WorkerLane,
+  requestedEffort: ReasoningEffort,
+): void {
+  assertReasonixEffort(status, requestedEffort);
+  if (!laneWorkMode(status.workMode, workerLane) || !laneSessionMode(status.mode, workerLane)) {
+    throw new BridgeError(
+      'reasonix_incompatible',
+      'Reasonix effective session mode violates the task worker lane',
+      {
+        workerLane,
+        mode: status.mode,
+        workMode: status.workMode,
+        requestedEffort,
+        effectiveEffort: status.effort,
+      },
+    );
+  }
+}
+
+export async function cancelBestEffortThenComplete(
+  cancel: () => Promise<void>,
+  complete: () => Promise<void> | void,
+): Promise<void> {
+  await cancel().catch(() => undefined);
+  await complete();
+}
+
+export function supervisedWorkerPrompt(
+  prompt: string,
+  executionTimeoutSeconds = DEFAULT_EXECUTION_TIMEOUT_SECONDS,
+  workerLane: WorkerLane = 'deep',
+): string {
+  if (workerLane === 'fast') {
+    return `${prompt}\n\n## Bridge supervision boundary\nYou are the edit worker. Make only the contract-scoped file edits needed for the task. Do not create plans, todos, goal sessions, AutoResearch runs, review or task skills, or subagents. Do not run acceptance checks. The bridge, not the worker, owns repository scope scanning, acceptance verification, staging, ref updates, and commit creation. Do not stage, commit, merge, push, or publish. Do not run acceptance commands unless the bridge explicitly sends a later repair instruction that names one.\nStop and report the current edit state before ${String(executionTimeoutSeconds)} seconds. After ${String(REASONIX_IDENTICAL_DENIAL_LIMIT - 1)} identical immutable-policy denials, do not retry the denied operation; stop and report the blocker.`;
+  }
+  return `${prompt}\n\n## Bridge supervision boundary\nYou are the edit worker. Make only the contract-scoped file edits needed for the task. Before the first edit, create a concise task plan or todo so Delivery mode can track acceptance. The bridge, not the worker, owns repository scope scanning, acceptance verification, staging, ref updates, and commit creation. Do not stage, commit, merge, push, or publish. Do not run acceptance commands unless the bridge explicitly sends a later repair instruction that names one.\nStop and report the current edit state before ${String(executionTimeoutSeconds)} seconds. After ${String(REASONIX_IDENTICAL_DENIAL_LIMIT - 1)} identical immutable-policy denials, do not retry the denied operation; stop and report the blocker.`;
+}
+
 export class ReasonixProcess {
   readonly fingerprint: string;
   private readonly child: ChildProcessWithoutNullStreams;
   private readonly connection: acp.ClientConnection;
   private readonly sessions = new Map<string, SessionRuntime>();
+  private readonly promptTasks = new Set<Promise<void>>();
   private readonly initializeResponse: InitializeResponse;
   private closed = false;
   private failureReported = false;
+  private readonly callbackTasks = new Set<Promise<void>>();
 
   private constructor(
     private readonly config: BridgeConfig,
@@ -165,6 +259,7 @@ export class ReasonixProcess {
       });
     }
 
+    const launched = { process: undefined as ReasonixProcess | undefined };
     const app = acp
       .client({ name: 'codex-reasonix-mcp' })
       .onRequest(
@@ -178,6 +273,7 @@ export class ReasonixProcess {
         REASONIX_STATUS_UPDATE_METHOD,
         reasonixStatusUpdateSchema,
         async ({ params }) => {
+          if (await launched.process?.rejectEffortDrift(params)) return;
           await callbacks.onStatusUpdate(params);
         },
       );
@@ -220,7 +316,15 @@ export class ReasonixProcess {
       child.kill('SIGTERM');
       throw new BridgeError('reasonix_incompatible', (error as Error).message);
     }
-    return new ReasonixProcess(config, repository, callbacks, child, connection, initialized);
+    launched.process = new ReasonixProcess(
+      config,
+      repository,
+      callbacks,
+      child,
+      connection,
+      initialized,
+    );
+    return launched.process;
   }
 
   private observeChild(): void {
@@ -241,7 +345,46 @@ export class ReasonixProcess {
   private reportProcessFailure(error: unknown): void {
     if (this.closed || this.failureReported) return;
     this.failureReported = true;
-    void this.callbacks.onProcessError([...this.sessions.keys()], error);
+    const task = Promise.resolve(this.callbacks.onProcessError([...this.sessions.keys()], error))
+      .catch(() => undefined)
+      .then(() => undefined);
+    this.callbackTasks.add(task);
+    void task.finally(() => this.callbackTasks.delete(task));
+  }
+
+  private clearPromptDeadline(runtime: SessionRuntime): void {
+    if (runtime.deadline) clearTimeout(runtime.deadline);
+    runtime.deadline = undefined;
+  }
+
+  private async stopSupervisedPrompt(runtime: SessionRuntime, error: BridgeError): Promise<void> {
+    if (!runtime.activePrompt || runtime.completionReported) return;
+    runtime.activePrompt = false;
+    runtime.completionReported = true;
+    this.clearPromptDeadline(runtime);
+    await cancelBestEffortThenComplete(
+      async () =>
+        await this.connection.agent.notify(acp.methods.agent.session.cancel, {
+          sessionId: runtime.sessionId,
+        }),
+      async () =>
+        await this.callbacks.onPromptComplete(runtime.sessionId, undefined, undefined, error),
+    );
+  }
+
+  private async rejectEffortDrift(update: ReasonixStatusUpdate): Promise<boolean> {
+    const runtime = this.sessions.get(update.sessionId);
+    if (!runtime || update.status.effort === runtime.requestedEffort) return false;
+    const error = new BridgeError(
+      'reasonix_incompatible',
+      'Reasonix effective reasoning effort changed unexpectedly',
+      {
+        requestedEffort: runtime.requestedEffort,
+        effectiveEffort: update.status.effort,
+      },
+    );
+    if (runtime.activePrompt) await this.stopSupervisedPrompt(runtime, error);
+    return true;
   }
 
   private async setSelect(
@@ -260,24 +403,33 @@ export class ReasonixProcess {
     return response.configOptions;
   }
 
-  private async configureSession(response: NewSessionResponse): Promise<void> {
+  private async configureSession(
+    response: NewSessionResponse,
+    requestedEffort: ReasoningEffort,
+    workerLane: WorkerLane,
+  ): Promise<void> {
     let options = response.configOptions ?? [];
     const model = desiredModel(options, this.config.model);
     options = await this.setSelect(response.sessionId, 'model', model);
-    const effort = desiredEffort(options);
-    if (effort) await this.setSelect(response.sessionId, 'effort', effort);
-    options = await this.setSelect(response.sessionId, 'work_mode', 'delivery');
+    const effort = desiredEffort(options, requestedEffort);
+    await this.setSelect(response.sessionId, effort.configId, effort.value);
+    // fast lane: Reasonix economy + normal session; deep lane: delivery + Goal.
+    const workMode = workerLane === 'fast' ? 'economy' : 'delivery';
+    const modeId = workerLane === 'fast' ? 'normal' : 'goal';
+    options = await this.setSelect(response.sessionId, 'work_mode', workMode);
     const approval = findOption(options, 'tool_approval');
     if (!approval || !flattenOptions(approval).some((item) => item.value === 'ask')) {
       throw new BridgeError('reasonix_incompatible', 'Reasonix tool_approval=ask is unavailable');
     }
     await this.setSelect(response.sessionId, 'tool_approval', 'ask');
-    if (!response.modes?.availableModes.some((mode) => mode.id === 'goal')) {
-      throw new BridgeError('reasonix_incompatible', 'Reasonix Goal mode is unavailable');
+    if (workerLane === 'deep') {
+      if (!response.modes?.availableModes.some((mode) => mode.id === 'goal')) {
+        throw new BridgeError('reasonix_incompatible', 'Reasonix Goal mode is unavailable');
+      }
     }
     await this.connection.agent.request(acp.methods.agent.session.setMode, {
       sessionId: response.sessionId,
-      modeId: 'goal',
+      modeId,
     });
   }
 
@@ -302,6 +454,8 @@ export class ReasonixProcess {
     status: ReasonixStatus,
     worktree: string,
     networkEnabled: boolean,
+    requestedEffort: ReasoningEffort,
+    workerLane: WorkerLane,
   ): Promise<void> {
     const canonicalWorktree = await realpath(worktree);
     const canonicalStatusRoot = await realpath(status.sandbox.workspaceRoot);
@@ -310,11 +464,12 @@ export class ReasonixProcess {
     );
     const modelMatches =
       status.model === this.config.model || status.model.endsWith(`/${this.config.model}`);
+    assertReasonixEffort(status, requestedEffort);
     const expectedEngine = process.platform === 'darwin' ? 'seatbelt' : 'bubblewrap';
     if (
       status.plannerMode !== 'off' ||
-      status.workMode !== 'delivery' ||
-      status.mode !== 'goal' ||
+      !laneWorkMode(status.workMode, workerLane) ||
+      !laneSessionMode(status.mode, workerLane) ||
       !modelMatches ||
       canonicalStatusRoot !== canonicalWorktree ||
       roots.length !== 1 ||
@@ -332,6 +487,9 @@ export class ReasonixProcess {
           workMode: status.workMode,
           mode: status.mode,
           model: status.model,
+          requestedEffort,
+          effectiveEffort: status.effort,
+          workerLane,
           workspaceRoot: status.sandbox.workspaceRoot,
           writeRoots: status.sandbox.writeRoots,
           sandboxEngine: status.sandbox.engine,
@@ -346,6 +504,9 @@ export class ReasonixProcess {
     taskId: string,
     worktree: string,
     networkEnabled: boolean,
+    requestedEffort: ReasoningEffort,
+    executionTimeoutSeconds: number,
+    workerLane: WorkerLane,
   ): Promise<{ sessionId: string; status: ReasonixStatus }> {
     const response = await this.connection.agent.request(acp.methods.agent.session.new, {
       cwd: worktree,
@@ -358,11 +519,15 @@ export class ReasonixProcess {
       worktree,
       activePrompt: false,
       lastSequence: 0,
+      requestedEffort,
+      workerLane,
+      executionTimeoutSeconds,
+      completionReported: false,
     };
     this.sessions.set(response.sessionId, runtime);
-    await this.configureSession(response);
+    await this.configureSession(response, requestedEffort, workerLane);
     const status = await this.status(response.sessionId);
-    await this.verifyEffectiveStatus(status, worktree, networkEnabled);
+    await this.verifyEffectiveStatus(status, worktree, networkEnabled, requestedEffort, workerLane);
     return { sessionId: response.sessionId, status };
   }
 
@@ -371,6 +536,9 @@ export class ReasonixProcess {
     sessionId: string,
     worktree: string,
     networkEnabled: boolean,
+    requestedEffort: ReasoningEffort,
+    executionTimeoutSeconds: number,
+    workerLane: WorkerLane,
   ): Promise<ReasonixStatus> {
     await this.connection.agent.request(acp.methods.agent.session.resume, {
       sessionId,
@@ -384,9 +552,13 @@ export class ReasonixProcess {
       worktree,
       activePrompt: false,
       lastSequence: 0,
+      requestedEffort,
+      workerLane,
+      executionTimeoutSeconds,
+      completionReported: false,
     });
     const status = await this.status(sessionId);
-    await this.verifyEffectiveStatus(status, worktree, networkEnabled);
+    await this.verifyEffectiveStatus(status, worktree, networkEnabled, requestedEffort, workerLane);
     return status;
   }
 
@@ -394,25 +566,53 @@ export class ReasonixProcess {
     const runtime = this.sessions.get(sessionId);
     if (!runtime) throw new BridgeError('invalid_state', `Unknown ACP session: ${sessionId}`);
     runtime.activePrompt = true;
-    void this.connection.agent
-      .request(acp.methods.agent.session.prompt, {
-        sessionId,
-        prompt: [{ type: 'text', text: prompt }],
-      })
-      .then(async (response) => {
+    runtime.completionReported = false;
+    this.clearPromptDeadline(runtime);
+    runtime.deadline = setTimeout(() => {
+      void this.stopSupervisedPrompt(
+        runtime,
+        new BridgeError('reasonix_unavailable', 'Reasonix turn exceeded its deadline', {
+          timeoutSeconds: runtime.executionTimeoutSeconds,
+        }),
+      );
+    }, runtime.executionTimeoutSeconds * 1_000);
+    const task = (async (): Promise<void> => {
+      try {
+        const response = await this.connection.agent.request(acp.methods.agent.session.prompt, {
+          sessionId,
+          prompt: [
+            {
+              type: 'text',
+              text: supervisedWorkerPrompt(
+                prompt,
+                runtime.executionTimeoutSeconds,
+                runtime.workerLane,
+              ),
+            },
+          ],
+        });
+        this.clearPromptDeadline(runtime);
         runtime.activePrompt = false;
+        if (runtime.completionReported) return;
         let status: ReasonixStatus | undefined;
         try {
           status = await this.status(sessionId);
         } catch {
           // Prompt completion still needs to be surfaced; malformed status fails closed upstream.
         }
+        if (status) assertReasonixEffort(status, runtime.requestedEffort);
+        runtime.completionReported = true;
         await this.callbacks.onPromptComplete(sessionId, response, status);
-      })
-      .catch(async (error: unknown) => {
+      } catch (error) {
+        this.clearPromptDeadline(runtime);
         runtime.activePrompt = false;
+        if (runtime.completionReported) return;
+        runtime.completionReported = true;
         await this.callbacks.onPromptComplete(sessionId, undefined, undefined, error);
-      });
+      }
+    })().catch(() => undefined);
+    this.promptTasks.add(task);
+    void task.finally(() => this.promptTasks.delete(task));
   }
 
   prompt(sessionId: string, prompt: string): void {
@@ -431,17 +631,21 @@ export class ReasonixProcess {
     }
     await this.connection.agent.request(acp.methods.agent.session.setMode, {
       sessionId,
-      modeId: 'goal',
+      modeId: runtime.workerLane === 'fast' ? 'normal' : 'goal',
     });
     this.startPrompt(sessionId, prompt);
     return 'prompted';
   }
 
   async cancel(sessionId: string): Promise<void> {
+    const runtime = this.sessions.get(sessionId);
+    if (runtime) this.clearPromptDeadline(runtime);
     await this.connection.agent.notify(acp.methods.agent.session.cancel, { sessionId });
   }
 
   async closeSession(sessionId: string): Promise<void> {
+    const runtime = this.sessions.get(sessionId);
+    if (runtime) this.clearPromptDeadline(runtime);
     await this.connection.agent.request(acp.methods.agent.session.close, { sessionId });
     this.sessions.delete(sessionId);
   }
@@ -452,6 +656,7 @@ export class ReasonixProcess {
 
   async shutdown(): Promise<void> {
     this.closed = true;
+    for (const runtime of this.sessions.values()) this.clearPromptDeadline(runtime);
     this.connection.close();
     this.child.kill('SIGTERM');
     await Promise.race([
@@ -459,6 +664,8 @@ export class ReasonixProcess {
       new Promise<void>((resolve) => setTimeout(resolve, 2_000)),
     ]);
     if (this.child.exitCode === null && this.child.signalCode === null) this.child.kill('SIGKILL');
+    await Promise.allSettled(this.promptTasks);
+    await Promise.allSettled(this.callbackTasks);
   }
 
   get agentInfo(): InitializeResponse['agentInfo'] {
@@ -483,16 +690,21 @@ export class ReasonixPool {
     private readonly callbacks: ReasonixCallbacks,
   ) {}
 
-  private key(repository: RepositoryIdentity, networkEnabled: boolean): string {
-    return `${repository.id}:${configFingerprint({ ...this.config, networkEnabled })}`;
+  private key(
+    repository: RepositoryIdentity,
+    networkEnabled: boolean,
+    workerLane: WorkerLane,
+  ): string {
+    return `${repository.id}:${configFingerprint({ ...this.config, networkEnabled })}:lane=${workerLane}`;
   }
 
   async forRepository(
     repository: RepositoryIdentity,
-    networkEnabled = this.config.networkEnabled,
+    networkEnabled: boolean,
+    workerLane: WorkerLane,
   ): Promise<ReasonixProcess> {
     const effectiveConfig = { ...this.config, networkEnabled };
-    const key = this.key(repository, networkEnabled);
+    const key = this.key(repository, networkEnabled, workerLane);
     for (;;) {
       let processPromise = this.processes.get(key);
       if (!processPromise) {

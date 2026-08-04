@@ -25,6 +25,38 @@ export const TERMINAL_STATUSES = new Set<TaskStatus>([
   'closed',
 ]);
 
+/** Every effort value that may appear in persisted task state, including legacy `minimal`. */
+export const REASONING_EFFORTS = ['minimal', 'low', 'medium', 'high', 'max'] as const;
+
+export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
+
+/** Effort values accepted by the wire schema and new configuration; `minimal` is legacy-only. */
+export const WIRE_REASONING_EFFORTS = ['low', 'medium', 'high', 'max'] as const;
+
+export type WireReasoningEffort = (typeof WIRE_REASONING_EFFORTS)[number];
+
+export const WORKER_LANES = ['fast', 'deep'] as const;
+
+export type WorkerLane = (typeof WORKER_LANES)[number];
+
+export const DEFAULT_FAST_LANE_EXECUTION_TIMEOUT_SECONDS = 600;
+export const DEFAULT_EXECUTION_TIMEOUT_SECONDS = 3_600;
+export const LEGACY_EXECUTION_TIMEOUT_SECONDS = 600;
+export const MIN_EXECUTION_TIMEOUT_SECONDS = 60;
+export const MAX_EXECUTION_TIMEOUT_SECONDS = 14_400;
+
+export interface ExecutionProfile {
+  requestedReasoningEffort: ReasoningEffort;
+  effectiveReasoningEffort: ReasoningEffort;
+  executionTimeoutSeconds: number;
+  workerLane: WorkerLane;
+}
+
+export const TASK_RECORD_SCHEMA_VERSION = 4 as const;
+export const TASK_RECORD_V1_SCHEMA_VERSION = 1 as const;
+export const TASK_RECORD_V2_SCHEMA_VERSION = 2 as const;
+export const TASK_RECORD_V3_SCHEMA_VERSION = 3 as const;
+
 export interface RepositoryIdentity {
   id: string;
   root: string;
@@ -53,6 +85,8 @@ export interface AcceptanceEvidence {
   approved: boolean;
   source: string;
   sha256?: string;
+  /** Verified byte length when the evidence is a file assertion or command output. */
+  outputBytes?: number;
 }
 
 export interface UsageTotals {
@@ -77,8 +111,18 @@ export interface InteractionRecord {
   response?: Record<string, unknown>;
 }
 
-export interface TaskRecord {
-  schemaVersion: 1;
+export interface SourceCollisionEvidence {
+  checkpoint: string;
+  baseCommit: string;
+  sourceHead?: string;
+  dirtyPaths: string[];
+  committedPaths: string[];
+  overlappingPaths: string[];
+  unavailable: boolean;
+  detectedAt: string;
+}
+
+interface TaskRecordFields {
   taskId: string;
   contract: TaskContractV1;
   contractHash: string;
@@ -111,6 +155,31 @@ export interface TaskRecord {
   usage: UsageTotals;
   reviewSummary?: string;
   commitHash?: string;
+  sourceCollision?: SourceCollisionEvidence;
+  /** Canonical worktree tree hash captured when the task entered review_required. */
+  reviewTreeHash?: string;
+  /** Monotonic count of review rounds (incremented on each review_required entry). */
+  reviewRevision: number;
+  /** Last observed effective Reasonix work mode (economy|balanced|delivery). */
+  reasonixWorkMode?: string;
+  /** Last observed effective Reasonix session mode (normal|plan|goal). */
+  reasonixSessionMode?: string;
+}
+
+/** Persisted v1 task records: eligible for migration through the current schema. */
+export interface TaskRecordV1 extends TaskRecordFields {
+  schemaVersion: typeof TASK_RECORD_V1_SCHEMA_VERSION;
+}
+
+/** Persisted v2 task records: eligible for migration to v3. */
+export interface TaskRecordV2 extends TaskRecordFields {
+  schemaVersion: typeof TASK_RECORD_V2_SCHEMA_VERSION;
+}
+
+/** Persisted task records: the current schema version. */
+export interface TaskRecord extends TaskRecordFields {
+  schemaVersion: typeof TASK_RECORD_SCHEMA_VERSION;
+  executionProfile: ExecutionProfile;
 }
 
 export interface JournalEvent {

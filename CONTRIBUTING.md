@@ -11,8 +11,10 @@ pnpm check
 pnpm audit --audit-level high
 ```
 
-`pnpm check` includes lint, format verification, TypeScript checking, all test
-lanes, production build, an npm package-content allowlist, and package dry-run.
+`pnpm check` includes lint, format verification, TypeScript checking, V8
+coverage, production build, an npm package-content allowlist, and package
+dry-run. Coverage must remain at least 80% for lines, statements, and functions
+and 75% for branches.
 
 Tests must remain offline by default. Never add a test that needs a live model,
 provider credential, external mutation, push, or npm publish. Use temporary Git
@@ -26,6 +28,11 @@ repositories and the fake ACP agent.
 - Keep Reasonix unable to stage or commit; bridge finalization owns one commit.
 - Fail closed when sandbox metadata or the Reasonix status extension is absent.
 - Do not persist thoughts, credentials, or unbounded terminal output.
+- Keep hard shell denials ahead of contract matching; `allowed_commands` must
+  never become acceptance evidence.
+- Treat the optional user hook as a manually trusted guardrail; core collision
+  scans remain authoritative.
+- Keep task mutations dry-run by default and preserve worker refs/commits.
 - Add focused unit/integration lanes instead of one catch-all test.
 
 ## Pull requests
@@ -36,12 +43,21 @@ checkouts, worktrees, or package tarballs.
 
 ## Releases
 
-Update `CHANGELOG.md` and `package.json` together, then create a GitHub release
-whose tag exactly matches `v<version>`. The `npm` environment and npm trusted
-publisher must both authorize `.github/workflows/release.yml`. Never add an npm
-automation token: the workflow uses short-lived OIDC and provenance.
+Update `CHANGELOG.md`, `package.json`, and `src/version.ts` together, verify the
+lockfile, then create a GitHub release whose tag exactly matches `v<version>`.
+The `npm` environment and trusted publisher must authorize
+`.github/workflows/release.yml`. Never add an npm automation token: the workflow
+uses short-lived OIDC and provenance. Never publish locally.
 
 Prereleases publish under `next`; stable versions publish under `latest`. A
-stable release also requires a clean-install verification, registry signatures
-and provenance, `doctor` against a supported official Reasonix binary, and a
-fresh Codex catalog smoke that does not invoke Reasonix work.
+release candidate must pass all five protected checks: Verify on Node 22 Linux,
+Node 24 Linux, and Node 22 macOS, Dependency audit, and CodeQL. Run standard
+doctor without a provider call. The single deep-doctor live conformance run is
+separate, explicit, cost-authorized, bounded to 50,000 cumulative provider
+tokens plus ten minutes, and required before stable promotion.
+
+Stable promotion changes only version/changelog metadata after RC conformance,
+then repeats protected checks. Verify clean installs, package contents,
+registry signatures/attestations, provenance, and dist-tags after each publish.
+If an RC fails, prepare the next RC; never overwrite/unpublish. If a published
+stable defect appears, release a patch.

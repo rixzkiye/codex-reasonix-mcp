@@ -14,6 +14,7 @@ import {
   createAtomicCommit,
   createIsolatedWorktree,
   discoverRepository,
+  resolveGitIdentity,
   stageExplicitFiles,
   validateTaskId,
 } from '../../src/repository.js';
@@ -58,6 +59,7 @@ describe('isolated Git finalization', () => {
       isolated.worktree,
       repository.head,
       'git-success: create result',
+      await resolveGitIdentity(repository),
     );
     expect(commit).not.toBe(repository.head);
     const sourceHead = await runCommand({ argv: ['git', 'rev-parse', 'HEAD'], cwd: source });
@@ -104,6 +106,30 @@ describe('isolated Git finalization', () => {
       cwd: isolated.worktree,
     });
     expect(staged.stdout).toBe('');
+  });
+
+  it('rolls back bridge-owned paths when explicit staging does not match', async () => {
+    const source = await createGitRepository();
+    const repository = await discoverRepository(source);
+    const isolated = await createIsolatedWorktree(
+      repository,
+      path.join(source, '.ignored-state-worktrees'),
+      'staging-rollback',
+      repository.head,
+    );
+    await writeFile(path.join(isolated.worktree, 'result.txt'), 'still in the worktree\n', 'utf8');
+
+    await expect(
+      stageExplicitFiles(isolated.worktree, ['result.txt', 'README.md']),
+    ).rejects.toMatchObject({ code: 'ownership_ambiguous' });
+    const staged = await runCommand({
+      argv: ['git', 'diff', '--cached', '--name-only'],
+      cwd: isolated.worktree,
+    });
+    expect(staged.stdout).toBe('');
+    expect(await readFile(path.join(isolated.worktree, 'result.txt'), 'utf8')).toBe(
+      'still in the worktree\n',
+    );
   });
 
   it('resolves in-worktree symlinks before evaluating write scope', async () => {
@@ -165,7 +191,12 @@ describe('isolated Git finalization', () => {
     await chmod(hook, 0o755);
 
     await expect(
-      createAtomicCommit(isolated.worktree, repository.head, 'hook-failure: should not commit'),
+      createAtomicCommit(
+        isolated.worktree,
+        repository.head,
+        'hook-failure: should not commit',
+        await resolveGitIdentity(repository),
+      ),
     ).rejects.toMatchObject({ code: 'commit_failed' });
     const head = await runCommand({ argv: ['git', 'rev-parse', 'HEAD'], cwd: isolated.worktree });
     expect(head.stdout.trim()).toBe(repository.head);
@@ -193,7 +224,12 @@ describe('isolated Git finalization', () => {
     await chmod(hook, 0o755);
 
     await expect(
-      createAtomicCommit(isolated.worktree, repository.head, 'hook-mutation: reject mutation'),
+      createAtomicCommit(
+        isolated.worktree,
+        repository.head,
+        'hook-mutation: reject mutation',
+        await resolveGitIdentity(repository),
+      ),
     ).rejects.toMatchObject({ code: 'ownership_ambiguous' });
     const head = await runCommand({ argv: ['git', 'rev-parse', 'HEAD'], cwd: isolated.worktree });
     expect(head.stdout.trim()).toBe(repository.head);
@@ -202,6 +238,44 @@ describe('isolated Git finalization', () => {
       cwd: isolated.worktree,
     });
     expect(count.stdout.trim()).toBe('0');
+  });
+
+  it('creates a commit from bridge environment identity without Git identity config', async () => {
+    const source = await createGitRepository();
+    const repository = await discoverRepository(source);
+    const isolated = await createIsolatedWorktree(
+      repository,
+      path.join(source, '.ignored-state-worktrees'),
+      'environment-identity',
+      repository.head,
+    );
+    for (const key of ['user.name', 'user.email']) {
+      const unset = await runCommand({
+        argv: ['git', 'config', '--unset', key],
+        cwd: isolated.worktree,
+      });
+      expect(unset.exitCode).toBe(0);
+    }
+    await writeFile(path.join(isolated.worktree, 'result.txt'), 'environment identity\n', 'utf8');
+    await stageExplicitFiles(isolated.worktree, ['result.txt']);
+    const identity = await resolveGitIdentity(repository, {
+      GIT_AUTHOR_NAME: 'Bridge Environment Author',
+      GIT_AUTHOR_EMAIL: 'bridge-environment@example.invalid',
+    });
+
+    const commit = await createAtomicCommit(
+      isolated.worktree,
+      repository.head,
+      'environment-identity: commit without config',
+      identity,
+    );
+    const author = await runCommand({
+      argv: ['git', 'show', '-s', '--format=%an <%ae>', commit],
+      cwd: isolated.worktree,
+    });
+    expect(author.stdout.trim()).toBe(
+      'Bridge Environment Author <bridge-environment@example.invalid>',
+    );
   });
 
   it('contains no bridge code path that invokes git push', async () => {
