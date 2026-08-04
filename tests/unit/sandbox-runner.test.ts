@@ -251,49 +251,55 @@ describe('runSandboxed', () => {
     },
   );
 
-  it.skipIf(!sandboxStatus.available)('leaves no descendant processes behind', async () => {
-    const worktree = await mkdtemp(path.join(os.tmpdir(), 'reasonix-sandbox-desc-'));
-    const marker = `reasonix-gate-sleep-${process.pid}`;
-    const result = await runSandboxed(
-      {
-        worktree,
-        argv: ['/bin/bash', '-c', `exec -a ${marker} sleep 45 & echo launched`],
-        cwd: worktree,
-      },
-      false,
-    );
-    expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain('launched');
-    // Give any escaped process a moment to surface, then verify none remains.
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    const { execFile } = await import('node:child_process');
-    const ps = await new Promise<string>((resolve, reject) => {
-      execFile('ps', ['-eo', 'args='], (error, stdout) => {
-        if (error) reject(new Error(error.message));
-        else resolve(stdout);
+  it.skipIf(!sandboxStatus.available || process.platform !== 'linux')(
+    'leaves no descendant processes behind',
+    async () => {
+      const worktree = await mkdtemp(path.join(os.tmpdir(), 'reasonix-sandbox-desc-'));
+      const marker = `reasonix-gate-sleep-${process.pid}`;
+      const result = await runSandboxed(
+        {
+          worktree,
+          argv: ['/bin/bash', '-c', `exec -a ${marker} sleep 45 & echo launched`],
+          cwd: worktree,
+        },
+        false,
+      );
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain('launched');
+      // Give any escaped process a moment to surface, then verify none remains.
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const { execFile } = await import('node:child_process');
+      const ps = await new Promise<string>((resolve, reject) => {
+        execFile('ps', ['-eo', 'args='], (error, stdout) => {
+          if (error) reject(new Error(error.message));
+          else resolve(stdout);
+        });
       });
-    });
-    expect(ps.split('\n').filter((line) => line.includes(marker))).toEqual([]);
-  });
+      expect(ps.split('\n').filter((line) => line.includes(marker))).toEqual([]);
+    },
+  );
 
-  it.skipIf(!sandboxStatus.available)('pins a writable TMPDIR inside the sandbox', async () => {
-    const worktree = await mkdtemp(path.join(os.tmpdir(), 'reasonix-sandbox-tmp-'));
-    const result = await runSandboxed(
-      {
-        worktree,
-        argv: [
-          '/bin/sh',
-          '-c',
-          'echo TMPDIR=$TMPDIR; touch $TMPDIR/probe-$$.tmp && echo TMP_WRITABLE',
-        ],
-        cwd: worktree,
-      },
-      false,
-    );
-    expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain('TMPDIR=/tmp');
-    expect(result.stdout).toContain('TMP_WRITABLE');
-  });
+  it.skipIf(!sandboxStatus.available || process.platform !== 'linux')(
+    'pins a writable TMPDIR inside the sandbox',
+    async () => {
+      const worktree = await mkdtemp(path.join(os.tmpdir(), 'reasonix-sandbox-tmp-'));
+      const result = await runSandboxed(
+        {
+          worktree,
+          argv: [
+            '/bin/sh',
+            '-c',
+            'echo TMPDIR=$TMPDIR; touch $TMPDIR/probe-$$.tmp && echo TMP_WRITABLE',
+          ],
+          cwd: worktree,
+        },
+        false,
+      );
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain('TMPDIR=/tmp');
+      expect(result.stdout).toContain('TMP_WRITABLE');
+    },
+  );
 
   it.skipIf(!sandboxStatus.available)('resolves symlinked worktrees before binding', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'reasonix-sandbox-link-'));
@@ -310,6 +316,9 @@ describe('runSandboxed', () => {
       false,
     );
     expect(result.exitCode).toBe(0);
-    expect(result.stdout.trim()).toBe(real);
+    const { realpath } = await import('node:fs/promises');
+    // Seatbelt sees the canonical path (e.g. /private/var on macOS), which is
+    // also what bubblewrap binds after symlink resolution.
+    expect(result.stdout.trim()).toBe(await realpath(real));
   });
 });

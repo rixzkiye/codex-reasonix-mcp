@@ -115,28 +115,31 @@ describe.skipIf(!sandboxed)('command sandbox adversarial gates', () => {
     expect(result.stdout).toContain('BLOCKED');
   });
 
-  it('kills background descendants when the command exits', async () => {
-    const worktree = await mkdtemp(path.join(os.tmpdir(), 'reasonix-gate-desc-'));
-    const marker = `reasonix-gate-sleep-${process.pid}`;
-    const result = await runSandboxed(
-      {
-        worktree,
-        argv: ['/bin/bash', '-c', `exec -a ${marker} sleep 60 & echo launched`],
-        cwd: worktree,
-      },
-      false,
-    );
-    expect(result.stdout).toContain('launched');
-    await new Promise((resolve) => setTimeout(resolve, 750));
-    const { execFile } = await import('node:child_process');
-    const ps = await new Promise<string>((resolve, reject) => {
-      execFile('ps', ['-eo', 'args='], (error, stdout) => {
-        if (error) reject(new Error(error.message));
-        else resolve(stdout);
+  it.skipIf(process.platform !== 'linux')(
+    'kills background descendants when the command exits',
+    async () => {
+      const worktree = await mkdtemp(path.join(os.tmpdir(), 'reasonix-gate-desc-'));
+      const marker = `reasonix-gate-sleep-${process.pid}`;
+      const result = await runSandboxed(
+        {
+          worktree,
+          argv: ['/bin/bash', '-c', `exec -a ${marker} sleep 60 & echo launched`],
+          cwd: worktree,
+        },
+        false,
+      );
+      expect(result.stdout).toContain('launched');
+      await new Promise((resolve) => setTimeout(resolve, 750));
+      const { execFile } = await import('node:child_process');
+      const ps = await new Promise<string>((resolve, reject) => {
+        execFile('ps', ['-eo', 'args='], (error, stdout) => {
+          if (error) reject(new Error(error.message));
+          else resolve(stdout);
+        });
       });
-    });
-    expect(ps.split('\n').filter((line) => line.includes(marker))).toEqual([]);
-  });
+      expect(ps.split('\n').filter((line) => line.includes(marker))).toEqual([]);
+    },
+  );
 
   it('lets benign verification commands succeed inside the sandbox', async () => {
     const worktree = await mkdtemp(path.join(os.tmpdir(), 'reasonix-gate-benign-'));

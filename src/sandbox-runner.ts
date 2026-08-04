@@ -1,4 +1,4 @@
-import { access, constants, realpath, stat } from 'node:fs/promises';
+import { access, constants, mkdtemp, realpath, rm, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
@@ -42,6 +42,11 @@ export interface SandboxedCommandOptions {
    * host temp). Falls back to `os.tmpdir()` when omitted.
    */
   tmpDir?: string;
+  /**
+   * Per-command scratch directory (seatbelt): the profile allows writes only
+   * here and under the worktree, and TMPDIR/TMP/TEMP are pinned to it.
+   */
+  scratchDir?: string;
   argv: CommandOptions['argv'];
   cwd: string;
   timeoutMs?: number;
@@ -166,10 +171,12 @@ export function buildSeatbeltProfile(
   // path-based read denies. Deny link creation outright.
   lines.push('(deny file-link)');
   lines.push(`(allow file-write* (subpath "${escapeProfilePath(options.worktree)}"))`);
-  // Guaranteed writable scratch space: host temp stays writable so tools
-  // honoring TMPDIR have a scratch dir (the rest of the filesystem is
-  // read-only or denied). Callers pass the canonical (symlink-resolved) path.
-  lines.push(`(allow file-write* (subpath "${escapeProfilePath(options.tmpDir ?? os.tmpdir())}"))`);
+  // Guaranteed writable scratch space: the per-command scratch directory
+  // (seatbelt, TMPDIR-pinned) or, when omitted, the canonical host temp.
+  // The rest of the filesystem stays read-only or denied.
+  lines.push(
+    `(allow file-write* (subpath "${escapeProfilePath(options.scratchDir ?? options.tmpDir ?? os.tmpdir())}"))`,
+  );
   if (options.repositoryRoot) {
     lines.push(`(allow file-read* (subpath "${escapeProfilePath(options.repositoryRoot)}"))`);
   }
@@ -286,13 +293,20 @@ export async function runSandboxed(
     : undefined;
   const overlays = await resolveCredentialOverlays();
   // Pin temp so tools honoring TMPDIR always have a writable scratch space:
-  // bubblewrap exposes a private tmpfs at /tmp; seatbelt allows writes to
-  // the host temp directory (profile).
+  // bubblewrap exposes a private tmpfs at /tmp; seatbelt cannot mount one, so
+  // the command gets a dedicated scratch directory and the profile allows
+  // writes only to that directory (the rest of the host temp stays denied).
   const sandboxEnv: Record<string, string> = { ...(options.env ?? {}) };
+  let scratchDir: string | undefined;
   if (status.engine === 'bubblewrap') {
     sandboxEnv.TMPDIR = '/tmp';
     sandboxEnv.TMP = '/tmp';
     sandboxEnv.TEMP = '/tmp';
+  } else {
+    scratchDir = await mkdtemp(path.join(tmpDir, 'codex-reasonix-scratch-'));
+    sandboxEnv.TMPDIR = scratchDir;
+    sandboxEnv.TMP = scratchDir;
+    sandboxEnv.TEMP = scratchDir;
   }
   const sandboxOptions: SandboxedCommandOptions = {
     ...options,
@@ -301,6 +315,7 @@ export async function runSandboxed(
     repositoryRoot,
     readOnlyPaths,
     tmpDir,
+    scratchDir,
   };
   const argv: [string, ...string[]] =
     status.engine === 'bubblewrap'
@@ -312,12 +327,18 @@ export async function runSandboxed(
           '--',
           ...options.argv,
         ];
-  return await runCommand({
-    argv,
-    cwd,
-    timeoutMs: options.timeoutMs,
-    maxOutputBytes: options.maxOutputBytes,
-    env: sandboxEnv,
-    signal: options.signal,
-  });
+  try {
+    return await runCommand({
+      argv,
+      cwd,
+      timeoutMs: options.timeoutMs,
+      maxOutputBytes: options.maxOutputBytes,
+      env: sandboxEnv,
+      signal: options.signal,
+    });
+  } finally {
+    if (scratchDir) {
+      await rm(scratchDir, { recursive: true, force: true });
+    }
+  }
 }
