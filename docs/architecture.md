@@ -23,6 +23,11 @@ open-world. Inspect is read-only, non-destructive, idempotent, and closed-world.
 Delegate and finalize derive repository authority from
 `codex/sandbox-state-meta`.
 
+The default supervision path is one delegate call held until review (or an
+interaction/failure/timeout), followed by one finalize call held until a
+terminal result. Lifecycle waiters ignore ordinary progress events. Inspect is
+available for recovery and explicit observation; event history is opt-in.
+
 ## Runtime components
 
 `src/runtime.ts` is a thin façade over these components:
@@ -79,19 +84,33 @@ then stops the turn and pauses on the third identical denial in one prompt.
 
 A canonical repository identity hashes the real repository root and Git common
 directory. A process-pool key adds the effective configuration/network
-fingerprint. Tasks may share a process but never a branch, worktree, session,
-contract hash, or state.
+fingerprint and the task `worker_lane`; fast and deep tasks of one repository
+never share a Reasonix process. Tasks may share a process but never a branch,
+worktree, session, contract hash, or state.
 
-Reasonix starts in Delivery + Goal with planner off, workspace-only writes, an
-enforced OS sandbox, and explicit network posture. The bridge validates the ACP
-status extension and effective sandbox before work proceeds.
+Fast-lane tasks run Reasonix in economy + normal session mode with planner off:
+the prompt is a direct edit instruction with no plan/todo and no worker-owned
+acceptance checks, and Goal, AutoResearch, review/task skills, or subagent
+signals fail the task fast. Deep-lane tasks keep Delivery + Goal continuation.
+Both lanes enforce workspace-only writes, an enforced OS sandbox, explicit
+network posture, and effective-status verification on create, resume, repair,
+and finalize. The bridge validates the ACP status extension and effective
+sandbox before work proceeds.
 
-TaskRecord v2 is version-gated and validates canonical contract/hash, identity,
-evidence, usage, collision state, and semantic timestamps. Valid v1 state is
-migrated atomically under serialized stale-read protection. Corrupt, unknown
-older, and future schema versions fail closed. On restart, interrupted tasks
-pause with their worktree/evidence preserved; inspection is required before
-resume.
+TaskRecord v4 is version-gated and validates canonical contract/hash, identity,
+evidence, usage, collision state, and semantic timestamps. Valid v1/v2 state is
+migrated directly to v4 under serialized stale-read protection, keeping the
+historical effective `max` effort and 600-second deadline on the deep lane;
+v3 records keep their stored effort/deadline and gain the deep lane. New tasks
+use the exact requested/env/default effort and lane-based deadline. Corrupt,
+unknown older, and future schema versions fail closed. On restart, interrupted
+tasks pause with their worktree/evidence preserved; inspection is required
+before resume.
+
+Untracked `.reasonix/**` files are bridge runtime metadata: they are excluded
+from changed-file lists, canonical diffs/trees, review bundles, secret scans,
+staging, and commits, and never require a `.gitignore` entry. Tracked changes
+in that namespace and structured worker writes into it are rejected.
 
 ## Source-collision authority
 
@@ -109,17 +128,31 @@ trust. It is an early guardrail only—the core scanner remains authoritative.
 
 ## Finalization transaction
 
-Finalization requires an idle `review_required` task and exact review-criterion
-approval. It guards source ownership, recomputes worker changes, rejects
-out-of-scope paths/submodules/symlink escapes, enforces size/secret checks, runs
-every verification command, then repeats collision and content checks.
-Verification-time diff mutation is rejected.
+Finalization requires an idle `review_required` task. Approval accepts any
+valid acceptance id: automated ids are ignored for approval, but every
+review-evidence criterion must be approved (missing or foreign ids are rejected
+with the required list). It guards source ownership, recomputes worker changes,
+rejects out-of-scope paths/submodules/symlink escapes, enforces size/secret
+checks, runs every verification command, verifies byte-exact `file_assertions`,
+then repeats collision and content checks.
 
-Only verification results can approve automated criteria. The bridge stages an
-explicit path list, compares reviewed and staged diffs, and runs Git commit
-hooks against a disposable reviewed index. Hook mutation aborts. The final
-commit object uses the exact reviewed tree, and the worker ref advances through
-an old-OID compare-and-swap. Nothing pushes or merges.
+The bridge captures a canonical worktree tree at review readiness (a temporary
+index built from the base commit covers tracked, untracked, deleted, and mode
+changes, excluding runtime metadata). Finalization compares that snapshot
+before and after verification, then compares the staged tree after explicit
+staging — no `git add -N` is ever used. Verification-time or post-review tree
+mutation is rejected as ownership ambiguity; failures before commit return to
+repairable `review_required`, where the canonical snapshot is re-captured so a
+hand-repaired worktree stays finalizable, and only commit/ref failures use
+`commit_failed`.
+
+Automated criteria are approved by verification results or by file-assertion
+hash/length evidence. The bridge stages an explicit path list, compares
+reviewed and staged trees, and runs Git commit hooks against a disposable
+reviewed index. Hook mutation aborts. The final commit object uses the exact
+reviewed tree, and the worker ref advances through an old-OID compare-and-swap.
+Completion does not integrate the source checkout; the supervisor may
+explicitly cherry-pick the returned hash after review. Nothing pushes or merges.
 
 ## Retention and local metrics
 

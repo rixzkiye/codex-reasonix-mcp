@@ -8,6 +8,7 @@ after changing its MCP environment.
 | `REASONIX_BIN`                       | `reasonix`               | Reasonix executable or absolute local build path                          |
 | `CODEX_REASONIX_STATE_DIR`           | platform state directory | Private tasks, worktrees, locks, archives, tombstones, hooks, and metrics |
 | `CODEX_REASONIX_MODEL`               | `deepseek-v4-flash`      | Required Reasonix model selector                                          |
+| `CODEX_REASONIX_EFFORT`              | `medium`                 | Default task effort: low, medium, high, or max (minimal is legacy-only)   |
 | `CODEX_REASONIX_NETWORK`             | off                      | Request sandbox egress; Codex metadata must also permit it                |
 | `CODEX_REASONIX_SECRET_SCANNER_ARGV` | unset                    | JSON argv array for an additional local secret scanner                    |
 
@@ -26,6 +27,38 @@ codex mcp add reasonix-worker \
 
 The scanner receives changed file names appended to its configured argv and
 runs in a sanitized environment. Never place credentials in argv.
+
+Long-running review and finalization calls require an explicit Codex MCP tool
+timeout. Add this to `~/.codex/config.toml` after registration:
+
+```toml
+[mcp_servers.reasonix-worker]
+tool_timeout_sec = 900
+```
+
+The bridge requires 900 seconds because Codex defaults MCP tools to 60 seconds.
+Standard and deep doctor both fail their required configuration check when the
+setting is absent or lower.
+
+Task input `reasoning_effort` overrides `CODEX_REASONIX_EFFORT`; when both are
+absent the bridge uses `medium`. `minimal` is no longer accepted on the wire or
+in new configuration; persisted legacy records that used it remain readable.
+There is no implicit inheritance from Codex's chat effort control. A resumed
+task retains its stored effort.
+
+Task input `worker_lane` selects the execution lane: `fast` (default) runs a
+direct-edit Reasonix session in economy + normal mode with no Goal, AutoResearch,
+review/task skills, or subagents; `deep` runs Delivery + Goal for explicitly
+long-horizon tasks. The lane is persisted in the task execution profile and is
+immutable for an existing task.
+
+Task input `execution_timeout_seconds` controls the worker lifetime independently
+of MCP wait time. New fast-lane tasks default to 600 seconds and deep-lane tasks
+to 3,600 seconds, both accepting 60–14,400 seconds; an omitted resume retains
+the stored value. The delegate wait remains bounded to 600 seconds and returns
+recoverably without cancelling a longer worker. Worker usage is reported but
+has no hard token ceiling; the execution deadline and repeated-denial limit
+remain the runaway guards.
 
 ## Network
 

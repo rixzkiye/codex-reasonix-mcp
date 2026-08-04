@@ -1,4 +1,4 @@
-import { writeFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { Readable, Writable } from 'node:stream';
@@ -18,6 +18,8 @@ interface FakeSession {
   promptTokens?: number;
   diagnosticLeak?: boolean;
   verification?: { argv: [string, ...string[]]; cwd: string };
+  fast: boolean;
+  promptCount: number;
 }
 
 const sessions = new Map<string, FakeSession>();
@@ -25,10 +27,17 @@ let nextSession = 0;
 const networkFlag = process.argv.lastIndexOf('--sandbox-network');
 const configuredNetwork = networkFlag >= 0 && process.argv[networkFlag + 1] === 'on';
 const fakeMode = process.argv.find((argument) => argument.startsWith('--fake-mode='))?.slice(12);
+const fakeSubdir = process.argv
+  .find((argument) => argument.startsWith('--fake-subdir='))
+  ?.slice(14);
+const resultPath = (cwd: string): string =>
+  fakeSubdir ? path.join(cwd, fakeSubdir, 'result.txt') : path.join(cwd, 'result.txt');
 
 const statusRequest = z.object({ sessionId: z.string() });
 
 function configOptions(session: FakeSession) {
+  const efforts = ['minimal', 'low', 'medium', 'high', 'max'];
+  if (fakeMode === 'unsupported-effort') efforts.splice(efforts.indexOf('low'), 1);
   return [
     {
       id: 'model',
@@ -43,11 +52,8 @@ function configOptions(session: FakeSession) {
       name: 'Effort',
       category: 'thought_level',
       type: 'select' as const,
-      currentValue: session.options.effort ?? 'auto',
-      options: [
-        { value: 'auto', name: 'Auto' },
-        { value: 'high', name: 'High' },
-      ],
+      currentValue: session.options.effort ?? 'medium',
+      options: efforts.map((value) => ({ value, name: value })),
     },
     {
       id: 'work_mode',
@@ -56,6 +62,7 @@ function configOptions(session: FakeSession) {
       type: 'select' as const,
       currentValue: session.options.work_mode ?? 'balanced',
       options: [
+        { value: 'economy', name: 'Economy' },
         { value: 'balanced', name: 'Balanced' },
         { value: 'delivery', name: 'Delivery' },
       ],
@@ -96,20 +103,22 @@ function status(sessionId: string) {
     sessionId,
     state: session.running ? ('running' as const) : ('idle' as const),
     model: session.options.model ?? 'deepseek-v4-flash',
-    effort: session.options.effort ?? 'auto',
+    effort: fakeMode === 'effort-mismatch' ? 'high' : (session.options.effort ?? 'medium'),
     mode: session.mode as 'normal' | 'plan' | 'goal',
     workMode: (session.options.work_mode ?? 'balanced') as 'economy' | 'balanced' | 'delivery',
     plannerMode: 'off' as const,
     goal: {
-      status: session.cancelled
-        ? ('cancelled' as const)
-        : session.failed
-          ? ('failed' as const)
-          : session.complete
-            ? ('complete' as const)
-            : session.running
-              ? ('running' as const)
-              : ('none' as const),
+      status: session.fast
+        ? ('none' as const)
+        : session.cancelled
+          ? ('cancelled' as const)
+          : session.failed
+            ? ('failed' as const)
+            : session.complete
+              ? ('complete' as const)
+              : session.running
+                ? ('running' as const)
+                : ('none' as const),
       objective: 'fake offline goal',
     },
     phase: session.diagnosticLeak
@@ -174,7 +183,7 @@ const app = acp
       mode: 'normal',
       options: {
         model: 'deepseek-v4-flash',
-        effort: 'auto',
+        effort: 'medium',
         work_mode: 'balanced',
         tool_approval: 'ask',
       },
@@ -183,6 +192,8 @@ const app = acp
       sequence: 1,
       cancelled: false,
       failed: false,
+      fast: false,
+      promptCount: 0,
     };
     sessions.set(sessionId, session);
     return {
@@ -201,7 +212,18 @@ const app = acp
   .onRequest(acp.methods.agent.session.setConfigOption, ({ params }) => {
     const session = sessions.get(params.sessionId);
     if (!session) throw new Error('unknown session');
-    if ('value' in params) session.options[params.configId] = String(params.value);
+    if ('value' in params) {
+      const option = configOptions(session).find((candidate) => candidate.id === params.configId);
+      if (
+        !option ||
+        option.type !== 'select' ||
+        !option.options.some((candidate) => candidate.value === params.value)
+      ) {
+        throw new Error(`unsupported config option ${params.configId}=${String(params.value)}`);
+      }
+      session.options[params.configId] = String(params.value);
+      if (params.configId === 'work_mode') session.fast = params.value === 'economy';
+    }
     session.sequence += 1;
     return { configOptions: configOptions(session) };
   })
@@ -238,6 +260,20 @@ const app = acp
     if (!session) throw new Error('unknown session');
     session.running = true;
     session.complete = false;
+    session.promptCount += 1;
+    if (fakeMode === 'fast-goal') session.mode = 'goal';
+    if (fakeMode === 'fast-autoresearch') {
+      await client.notify(acp.methods.client.session.update, {
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: 'tool_call',
+          toolCallId: `research-${session.sequence}`,
+          title: 'AutoResearch agent',
+          kind: 'edit',
+          status: 'pending',
+        },
+      });
+    }
     const promptText = params.prompt
       .filter(
         (block): block is Extract<(typeof params.prompt)[number], { type: 'text' }> =>
@@ -276,8 +312,8 @@ const app = acp
         title: 'write_file result.txt',
         kind: 'edit',
         status: 'pending',
-        rawInput: { path: 'result.txt', content: 'offline result\n' },
-        locations: [{ path: `${session.cwd}/result.txt` }],
+        rawInput: { path: resultPath(session.cwd), content: 'offline result\n' },
+        locations: [{ path: resultPath(session.cwd) }],
       },
       options: [
         { optionId: 'allow_once', name: 'Allow', kind: 'allow_once' },
@@ -289,11 +325,38 @@ const app = acp
       session.sequence += 1;
       return { stopReason: 'cancelled' };
     }
-    await writeFile(`${session.cwd}/result.txt`, 'offline result\n', 'utf8');
+    if (fakeSubdir) await mkdir(path.join(session.cwd, fakeSubdir), { recursive: true });
+    await writeFile(
+      resultPath(session.cwd),
+      fakeMode === 'trailing-space' && session.promptCount === 1
+        ? 'offline result \n'
+        : 'offline result\n',
+      'utf8',
+    );
     if (fakeMode === 'fail-after-edit') {
       session.running = false;
       session.failed = true;
       session.sequence += 1;
+      return { stopReason: 'end_turn' };
+    }
+    if (session.fast) {
+      await client.notify(acp.methods.client.session.update, {
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: 'Created result.txt.' },
+        },
+      });
+      session.running = false;
+      session.complete = true;
+      session.sequence += 1;
+      await client.notify('_reasonix.io/session/status_update', {
+        schemaVersion: 1,
+        sequence: session.sequence,
+        sessionId: params.sessionId,
+        event: 'completion',
+        status: status(params.sessionId),
+      });
       return { stopReason: 'end_turn' };
     }
     if (!session.verification) throw new Error('fake agent did not receive contract verification');

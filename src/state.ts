@@ -22,12 +22,19 @@ import {
 import { metricForAuditEvent, MetricsStore } from './metrics.js';
 import { redact } from './redaction.js';
 import {
+  LEGACY_EXECUTION_TIMEOUT_SECONDS,
+  MAX_EXECUTION_TIMEOUT_SECONDS,
+  MIN_EXECUTION_TIMEOUT_SECONDS,
   TASK_RECORD_SCHEMA_VERSION,
   TASK_RECORD_V1_SCHEMA_VERSION,
+  TASK_RECORD_V2_SCHEMA_VERSION,
+  TASK_RECORD_V3_SCHEMA_VERSION,
+  REASONING_EFFORTS,
   TASK_STATUSES,
   TERMINAL_STATUSES,
   type AcceptanceEvidence,
   type InteractionRecord,
+  type ExecutionProfile,
   type JournalEvent,
   type RepositoryIdentity,
   type SourceCollisionEvidence,
@@ -129,6 +136,16 @@ function requireOptionalSha256(value: unknown, field: string): string | undefine
   return value === undefined ? undefined : requireSha256(value, field);
 }
 
+const GIT_OBJECT_ID_PATTERN = /^[0-9a-f]{40,64}$/;
+
+/** Git object ids (tree hashes) are 40-64 lowercase hex characters. */
+function requireTreeHash(value: unknown, field: string): string {
+  if (typeof value !== 'string' || !GIT_OBJECT_ID_PATTERN.test(value)) {
+    invalidState(`${field} must be a git object id (40-64 lowercase hex)`);
+  }
+  return value;
+}
+
 function requireOptionalRecord(value: unknown, field: string): Record<string, unknown> | undefined {
   return value === undefined ? undefined : requireRecord(value, field);
 }
@@ -158,6 +175,49 @@ function requireTaskStatus(value: unknown): TaskStatus {
     invalidState(`Unknown task status: ${String(value)}`);
   }
   return value as TaskStatus;
+}
+
+function requireReasoningEffort(
+  value: unknown,
+  field: string,
+): ExecutionProfile['requestedReasoningEffort'] {
+  if (typeof value !== 'string' || !(REASONING_EFFORTS as readonly string[]).includes(value)) {
+    invalidState(`${field} must be one of: ${REASONING_EFFORTS.join(', ')}`);
+  }
+  return value as ExecutionProfile['requestedReasoningEffort'];
+}
+
+function parseExecutionProfile(value: unknown): ExecutionProfile {
+  const record = requireRecord(value, 'executionProfile');
+  const timeout =
+    record.executionTimeoutSeconds === undefined
+      ? LEGACY_EXECUTION_TIMEOUT_SECONDS
+      : requireInteger(record.executionTimeoutSeconds, 'executionProfile.executionTimeoutSeconds');
+  if (timeout < MIN_EXECUTION_TIMEOUT_SECONDS || timeout > MAX_EXECUTION_TIMEOUT_SECONDS) {
+    invalidState(
+      `executionProfile.executionTimeoutSeconds must be between ${String(MIN_EXECUTION_TIMEOUT_SECONDS)} and ${String(MAX_EXECUTION_TIMEOUT_SECONDS)}`,
+    );
+  }
+  if (
+    record.workerLane !== undefined &&
+    record.workerLane !== 'fast' &&
+    record.workerLane !== 'deep'
+  ) {
+    invalidState('executionProfile.workerLane must be fast or deep');
+  }
+  return {
+    requestedReasoningEffort: requireReasoningEffort(
+      record.requestedReasoningEffort,
+      'executionProfile.requestedReasoningEffort',
+    ),
+    effectiveReasoningEffort: requireReasoningEffort(
+      record.effectiveReasoningEffort,
+      'executionProfile.effectiveReasoningEffort',
+    ),
+    executionTimeoutSeconds: timeout,
+    // Records written before the lane split (v3 and earlier) are deep-lane tasks.
+    workerLane: record.workerLane ?? 'deep',
+  };
 }
 
 function requireNumberOrNull(value: unknown, field: string): number | null {
@@ -248,6 +308,10 @@ function parseAcceptanceEvidence(value: unknown): AcceptanceEvidence {
     invalidState('acceptance evidence entry evidence must be automated or review');
   }
   const sha256 = requireOptionalSha256(record.sha256, 'acceptance evidence entry sha256');
+  const outputBytes = requireOptionalInteger(
+    record.outputBytes,
+    'acceptance evidence entry outputBytes',
+  );
   const parsed: AcceptanceEvidence = {
     criterionId: requireNonEmptyString(record.criterionId, 'acceptance evidence entry criterionId'),
     evidence: record.evidence,
@@ -255,7 +319,12 @@ function parseAcceptanceEvidence(value: unknown): AcceptanceEvidence {
     source: requireString(record.source, 'acceptance evidence entry source'),
   };
   if (sha256 !== undefined) parsed.sha256 = sha256;
+  if (outputBytes !== undefined) parsed.outputBytes = outputBytes;
   return parsed;
+}
+
+function requireOptionalInteger(value: unknown, field: string): number | undefined {
+  return value === undefined ? undefined : requireInteger(value, field);
 }
 
 function parseUsageTotals(value: unknown): UsageTotals {
@@ -301,6 +370,7 @@ function parseSourceCollisionEvidence(value: unknown): SourceCollisionEvidence {
 function parseTaskRecordFields(
   state: Record<string, unknown>,
   requireCanonicalContract = true,
+  schemaVersion: number = TASK_RECORD_SCHEMA_VERSION,
 ): TaskRecord {
   let contract: TaskContractV1;
   try {
@@ -321,6 +391,15 @@ function parseTaskRecordFields(
   }
   const record: TaskRecord = {
     schemaVersion: TASK_RECORD_SCHEMA_VERSION,
+    executionProfile:
+      schemaVersion <= TASK_RECORD_V2_SCHEMA_VERSION
+        ? {
+            requestedReasoningEffort: 'max',
+            effectiveReasoningEffort: 'max',
+            executionTimeoutSeconds: LEGACY_EXECUTION_TIMEOUT_SECONDS,
+            workerLane: 'deep',
+          }
+        : parseExecutionProfile(state.executionProfile),
     taskId: requireTaskId(state.taskId),
     contract,
     contractHash: contractHashValue,
@@ -349,6 +428,7 @@ function parseTaskRecordFields(
       parseAcceptanceEvidence,
     ),
     usage: parseUsageTotals(state.usage),
+    reviewRevision: requireInteger(state.reviewRevision ?? 0, 'reviewRevision'),
   };
   const reason = requireOptionalString(state.reason, 'reason');
   const acpSessionId = requireOptionalString(state.acpSessionId, 'acpSessionId');
@@ -356,6 +436,13 @@ function parseTaskRecordFields(
   const finalMessage = requireOptionalString(state.finalMessage, 'finalMessage');
   const reviewSummary = requireOptionalString(state.reviewSummary, 'reviewSummary');
   const commitHash = requireOptionalString(state.commitHash, 'commitHash');
+  const reviewTreeHash = requireOptionalString(state.reviewTreeHash, 'reviewTreeHash');
+  if (reviewTreeHash !== undefined) requireTreeHash(reviewTreeHash, 'reviewTreeHash');
+  const reasonixWorkMode = requireOptionalString(state.reasonixWorkMode, 'reasonixWorkMode');
+  const reasonixSessionMode = requireOptionalString(
+    state.reasonixSessionMode,
+    'reasonixSessionMode',
+  );
   const sourceCollision =
     state.sourceCollision === undefined
       ? undefined
@@ -366,13 +453,16 @@ function parseTaskRecordFields(
   if (finalMessage !== undefined) record.finalMessage = finalMessage;
   if (reviewSummary !== undefined) record.reviewSummary = reviewSummary;
   if (commitHash !== undefined) record.commitHash = commitHash;
+  if (reviewTreeHash !== undefined) record.reviewTreeHash = reviewTreeHash;
+  if (reasonixWorkMode !== undefined) record.reasonixWorkMode = reasonixWorkMode;
+  if (reasonixSessionMode !== undefined) record.reasonixSessionMode = reasonixSessionMode;
   if (sourceCollision !== undefined) record.sourceCollision = sourceCollision;
   return record;
 }
 
 /**
  * Parses and validates raw persisted state. Returns the validated current
- * (v2) record; v1 input is converted in memory and flagged for migration.
+ * (v3) record; v1/v2 input is converted in memory and flagged for migration.
  * Any malformed, missing, older-unknown, or future schema version fails
  * closed with BridgeError('invalid_state') before any write occurs.
  */
@@ -390,11 +480,17 @@ function parseTaskState(raw: string): {
   }
   const state = requireRecord(parsed, 'task state');
   const version = state.schemaVersion;
-  if (version !== TASK_RECORD_V1_SCHEMA_VERSION && version !== TASK_RECORD_SCHEMA_VERSION) {
+  if (
+    version !== TASK_RECORD_V1_SCHEMA_VERSION &&
+    version !== TASK_RECORD_V2_SCHEMA_VERSION &&
+    version !== TASK_RECORD_V3_SCHEMA_VERSION &&
+    version !== TASK_RECORD_SCHEMA_VERSION
+  ) {
     invalidState(`Unsupported task state schemaVersion: ${String(version)}`);
   }
-  const record = parseTaskRecordFields(state, version === TASK_RECORD_SCHEMA_VERSION);
-  return { raw, state, record, needsMigration: version === TASK_RECORD_V1_SCHEMA_VERSION };
+  const isCurrent = version === TASK_RECORD_SCHEMA_VERSION;
+  const record = parseTaskRecordFields(state, isCurrent, version);
+  return { raw, state, record, needsMigration: !isCurrent };
 }
 
 /** Validates a current persisted task record without performing migration. */
@@ -570,34 +666,30 @@ export class StateStore {
   async loadTask(taskId: string): Promise<TaskRecord> {
     const loaded = await this.readTask(taskId);
     if (!loaded.needsMigration) return loaded.record;
-    return await this.persistMigration(taskId, loaded);
+    return await this.persistMigration(taskId);
   }
 
   /**
-   * Persists a fully validated v1 -> v2 conversion. Serialized with the task
+   * Persists a fully validated legacy -> current conversion. Serialized with the task
    * update chain so concurrent updates, events, and migration cannot
    * interleave; a stale-read guard re-reads the file under the chain lock and
    * never overwrites a state file that changed after the initial read.
    */
-  private async persistMigration(
-    taskId: string,
-    loaded: {
-      raw: string;
-      state: Record<string, unknown>;
-      record: TaskRecord;
-      needsMigration: boolean;
-    },
-  ): Promise<TaskRecord> {
+  private async persistMigration(taskId: string): Promise<TaskRecord> {
     const prior = this.updates.get(taskId) ?? Promise.resolve();
     const current = prior.then(async () => {
       const latest = await this.readTask(taskId);
-      if (latest.raw === loaded.raw) {
+      if (latest.needsMigration) {
         const migrated: Record<string, unknown> = {
-          ...loaded.state,
+          ...latest.state,
           schemaVersion: TASK_RECORD_SCHEMA_VERSION,
-          contract: loaded.record.contract,
+          contract: latest.record.contract,
+          executionProfile: latest.record.executionProfile,
+          ...(latest.record.reviewTreeHash ? { reviewTreeHash: latest.record.reviewTreeHash } : {}),
         };
+        const validated = parseTaskRecordFields(migrated);
         await atomicWrite(this.statePath(taskId), `${JSON.stringify(migrated, null, 2)}\n`);
+        return validated;
       }
       return latest.record;
     });

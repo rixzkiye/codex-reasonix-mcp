@@ -128,10 +128,16 @@ async function newStore(): Promise<StateStore> {
 async function persistAsVersion(
   store: StateStore,
   task: TaskRecord,
-  version: 1 | 2,
+  version: 1 | 2 | 3,
 ): Promise<string> {
   await store.createTask(task);
-  const raw = `${JSON.stringify({ ...task, schemaVersion: version }, null, 2)}\n`;
+  const legacyTask = structuredClone(task) as Partial<TaskRecord>;
+  if (version <= 2) {
+    delete legacyTask.executionProfile;
+  } else {
+    delete (legacyTask.executionProfile as Partial<TaskRecord['executionProfile']>).workerLane;
+  }
+  const raw = `${JSON.stringify({ ...legacyTask, schemaVersion: version }, null, 2)}\n`;
   await writeFile(store.statePath(task.taskId), raw, 'utf8');
   return raw;
 }
@@ -231,26 +237,57 @@ describe('private persistent state', () => {
     expect(second.value).toBe('b');
   });
 
-  it('migrates valid schemaVersion 1 state to schemaVersion 2 atomically and preserves identity', async () => {
+  it.each([1, 2] as const)(
+    'migrates valid schemaVersion %i state to schemaVersion 4 atomically and preserves identity',
+    async (version) => {
+      const store = await newStore();
+      const task = richTask(`migrate-v${version}`);
+      const legacyRaw = await persistAsVersion(store, task, version);
+
+      const loaded = await store.loadTask(task.taskId);
+      expect(loaded.schemaVersion).toBe(4);
+      expect(loaded).toEqual({
+        ...task,
+        schemaVersion: 4,
+        executionProfile: {
+          requestedReasoningEffort: 'max',
+          effectiveReasoningEffort: 'max',
+          executionTimeoutSeconds: 600,
+          workerLane: 'deep',
+        },
+      });
+
+      // Contract/hash, repository/base/branch/worktree identity, audit
+      // sequences, evidence, interactions, verification, usage, and timestamps
+      // survive untouched. Legacy effective behavior is recorded as max on the
+      // deep lane with the former 600-second deadline.
+      const onDisk = await readFile(store.statePath(task.taskId), 'utf8');
+      expect(JSON.parse(onDisk)).toEqual(loaded);
+      expect(onDisk).not.toBe(legacyRaw);
+      expect(onDisk).toContain('"schemaVersion": 4');
+
+      // A second load observes the already-migrated file without rewriting.
+      expect((await store.loadTask(task.taskId)).schemaVersion).toBe(4);
+    },
+  );
+
+  it('migrates valid schemaVersion 3 state to schemaVersion 4 and keeps effort, deadline, and deep lane', async () => {
     const store = await newStore();
-    const task = richTask('migrate-me');
-    const v1Raw = await persistAsVersion(store, task, 1);
+    const task = richTask('migrate-v3');
+    const legacyRaw = await persistAsVersion(store, task, 3);
 
     const loaded = await store.loadTask(task.taskId);
-    expect(loaded.schemaVersion).toBe(2);
-    expect(loaded).toEqual({ ...task, schemaVersion: 2 });
-
-    // The rewrite is atomic and byte-identical to the v1 file except the
-    // schemaVersion value: contract/hash, repository/base/branch/worktree
-    // identity, audit sequences, evidence, interactions, verification,
-    // usage, and timestamps all survive untouched.
+    expect(loaded.schemaVersion).toBe(4);
+    expect(loaded.executionProfile).toEqual({
+      requestedReasoningEffort: 'medium',
+      effectiveReasoningEffort: 'medium',
+      executionTimeoutSeconds: 3_600,
+      workerLane: 'deep',
+    });
     const onDisk = await readFile(store.statePath(task.taskId), 'utf8');
-    expect(onDisk).toBe(`${JSON.stringify({ ...task, schemaVersion: 2 }, null, 2)}\n`);
-    expect(onDisk).toBe(v1Raw.replace('"schemaVersion": 1', '"schemaVersion": 2'));
-    expect(onDisk).not.toContain('"schemaVersion": 1');
-
-    // A second load observes the already-migrated file without rewriting.
-    expect((await store.loadTask(task.taskId)).schemaVersion).toBe(2);
+    expect(JSON.parse(onDisk)).toEqual(loaded);
+    expect(onDisk).not.toBe(legacyRaw);
+    expect(onDisk).toContain('"workerLane": "deep"');
   });
 
   it('canonicalizes a hash-valid legacy v1 contract during migration', async () => {
@@ -266,27 +303,61 @@ describe('private persistent state', () => {
 
     const loaded = await store.loadTask(task.taskId);
 
-    expect(loaded).toEqual(task);
+    expect(loaded).toEqual({
+      ...task,
+      executionProfile: {
+        requestedReasoningEffort: 'max',
+        effectiveReasoningEffort: 'max',
+        executionTimeoutSeconds: 600,
+        workerLane: 'deep',
+      },
+    });
     const persisted = JSON.parse(await readFile(store.statePath(task.taskId), 'utf8')) as Record<
       string,
       unknown
     >;
-    expect(persisted.schemaVersion).toBe(2);
+    expect(persisted.schemaVersion).toBe(4);
+    expect(persisted.executionProfile).toEqual({
+      requestedReasoningEffort: 'max',
+      effectiveReasoningEffort: 'max',
+      executionTimeoutSeconds: 600,
+      workerLane: 'deep',
+    });
     expect(persisted.contract).toEqual(task.contract);
     expect(JSON.stringify(persisted.contract)).toBe(JSON.stringify(task.contract));
     expect(persisted.contractHash).toBe(task.contractHash);
   });
 
-  it('loads valid v2 state and rejects malformed, corrupt, or unknown state with invalid_state without rewriting', async () => {
+  it('preserves the former 600-second behavior for v3 records without a stored deadline', async () => {
+    const store = await newStore();
+    const task = richTask('legacy-v3-timeout');
+    await store.createTask(task);
+    const legacy = structuredClone(task) as unknown as Record<string, unknown>;
+    delete (legacy.executionProfile as Record<string, unknown>).executionTimeoutSeconds;
+    await writeFile(store.statePath(task.taskId), `${JSON.stringify(legacy, null, 2)}\n`, 'utf8');
+
+    const loaded = await store.loadTask(task.taskId);
+    expect(loaded.executionProfile.executionTimeoutSeconds).toBe(600);
+    await store.saveTask(loaded);
+    expect(
+      (
+        JSON.parse(await readFile(store.statePath(task.taskId), 'utf8')) as {
+          executionProfile: { executionTimeoutSeconds: number };
+        }
+      ).executionProfile.executionTimeoutSeconds,
+    ).toBe(600);
+  });
+
+  it('loads valid v4 state and rejects malformed, corrupt, or unknown state with invalid_state without rewriting', async () => {
     const store = await newStore();
     const task = richTask('corrupt-me');
     await store.createTask(task);
-    expect((await store.loadTask(task.taskId)).schemaVersion).toBe(2);
+    expect((await store.loadTask(task.taskId)).schemaVersion).toBe(4);
 
     const base = structuredClone(task) as unknown as Record<string, unknown>;
     const variants: Array<{
       name: string;
-      version?: 1 | 2;
+      version?: 1 | 2 | 3;
       mutate?: (state: Record<string, unknown>) => void;
       raw?: string;
     }> = [
@@ -296,8 +367,8 @@ describe('private persistent state', () => {
       { name: 'empty object', raw: '{}\n' },
       { name: 'missing schemaVersion', mutate: (state) => void delete state.schemaVersion },
       { name: 'older unknown schemaVersion 0', mutate: (state) => void (state.schemaVersion = 0) },
-      { name: 'future schemaVersion 3', mutate: (state) => void (state.schemaVersion = 3) },
-      { name: 'string schemaVersion', mutate: (state) => void (state.schemaVersion = '2') },
+      { name: 'future schemaVersion 5', mutate: (state) => void (state.schemaVersion = 5) },
+      { name: 'string schemaVersion', mutate: (state) => void (state.schemaVersion = '4') },
       { name: 'fractional schemaVersion', mutate: (state) => void (state.schemaVersion = 1.5) },
       { name: 'invalid taskId', mutate: (state) => void (state.taskId = 'not valid!') },
       { name: 'taskId with parent segments', mutate: (state) => void (state.taskId = 'a..b') },
@@ -326,6 +397,38 @@ describe('private persistent state', () => {
       {
         name: 'non-boolean networkEnabled',
         mutate: (state) => void (state.networkEnabled = 'yes'),
+      },
+      {
+        name: 'missing execution profile',
+        mutate: (state) => void delete state.executionProfile,
+      },
+      {
+        name: 'invalid worker lane',
+        mutate: (state) =>
+          void ((state.executionProfile as Record<string, unknown>).workerLane = 'turbo'),
+      },
+      {
+        name: 'invalid requested effort',
+        mutate: (state) =>
+          void ((state.executionProfile as Record<string, unknown>).requestedReasoningEffort =
+            'extreme'),
+      },
+      {
+        name: 'invalid effective effort',
+        mutate: (state) =>
+          void ((state.executionProfile as Record<string, unknown>).effectiveReasoningEffort =
+            'auto'),
+      },
+      {
+        name: 'execution timeout below minimum',
+        mutate: (state) =>
+          void ((state.executionProfile as Record<string, unknown>).executionTimeoutSeconds = 59),
+      },
+      {
+        name: 'execution timeout above maximum',
+        mutate: (state) =>
+          void ((state.executionProfile as Record<string, unknown>).executionTimeoutSeconds =
+            14_401),
       },
       { name: 'empty phase', mutate: (state) => void (state.phase = '') },
       { name: 'malformed timestamp', mutate: (state) => void (state.createdAt = 'yesterday') },
@@ -402,12 +505,12 @@ describe('private persistent state', () => {
       expect(await readFile(store.statePath(task.taskId), 'utf8')).toBe(raw);
     }
 
-    // Unknown extra fields on an otherwise valid v2 record are tolerated; the
+    // Unknown extra fields on an otherwise valid v4 record are tolerated; the
     // version gate is the future-proofing boundary.
     const extra = structuredClone(base);
     extra.futureField = 'x';
     await writeFile(store.statePath(task.taskId), `${JSON.stringify(extra, null, 2)}\n`, 'utf8');
-    expect((await store.loadTask(task.taskId)).schemaVersion).toBe(2);
+    expect((await store.loadTask(task.taskId)).schemaVersion).toBe(4);
   });
 
   it('refuses to create or save malformed records without rewriting state', async () => {
@@ -423,7 +526,7 @@ describe('private persistent state', () => {
     expect(await store.exists('invalid-create')).toBe(false);
 
     // Records that are not the current schemaVersion must be rejected on
-    // create and save rather than silently rewritten as v2.
+    // create and save rather than silently rewritten as v3.
     const v1Create = { ...sampleTask('v1-create'), schemaVersion: 1 } as unknown as TaskRecord;
     await expect(store.createTask(v1Create)).rejects.toMatchObject({ code: 'invalid_state' });
     expect(await store.exists('v1-create')).toBe(false);
@@ -457,10 +560,10 @@ describe('private persistent state', () => {
     await Promise.all([...updates, ...events]);
 
     const final = await store.loadTask(task.taskId);
-    expect(final.schemaVersion).toBe(2);
+    expect(final.schemaVersion).toBe(4);
     expect(final.repairRounds).toBe(10);
     expect(final.eventSequence).toBe(5);
-    expect(await readFile(store.statePath(task.taskId), 'utf8')).toContain('"schemaVersion": 2');
+    expect(await readFile(store.statePath(task.taskId), 'utf8')).toContain('"schemaVersion": 4');
   });
 
   it('never overwrites a state file that changed after the initial read', async () => {
@@ -481,7 +584,7 @@ describe('private persistent state', () => {
     release();
 
     const [updated, loaded] = await Promise.all([update, load]);
-    expect(loaded.schemaVersion).toBe(2);
+    expect(loaded.schemaVersion).toBe(4);
     expect(loaded.summary).toBe('newer-snapshot');
     expect(updated.summary).toBe('newer-snapshot');
 
@@ -499,7 +602,7 @@ describe('private persistent state', () => {
 
     expect(await store.recoverInterruptedTasks()).toEqual(['recover-v1']);
     const record = await store.loadTask(task.taskId);
-    expect(record.schemaVersion).toBe(2);
+    expect(record.schemaVersion).toBe(4);
     expect(record.status).toBe('paused');
     expect(record.phase).toBe('restart_recovery');
     expect(record.eventSequence).toBeGreaterThanOrEqual(1);
@@ -514,12 +617,18 @@ describe('private persistent state', () => {
     ).toHaveLength(1);
   });
 
-  it('runtime-created records always use the current schemaVersion 2', async () => {
-    const task = richTask('new-v2');
-    expect(task.schemaVersion).toBe(2);
+  it('runtime-created records always use schemaVersion 4 with persisted effort and deep lane', async () => {
+    const task = richTask('new-v4');
+    expect(task.schemaVersion).toBe(4);
+    expect(task.executionProfile).toEqual({
+      requestedReasoningEffort: 'medium',
+      effectiveReasoningEffort: 'medium',
+      executionTimeoutSeconds: 3_600,
+      workerLane: 'deep',
+    });
     const store = await newStore();
     await store.createTask(task);
-    expect((await store.loadTask(task.taskId)).schemaVersion).toBe(2);
-    expect(await readFile(store.statePath(task.taskId), 'utf8')).toContain('"schemaVersion": 2');
+    expect((await store.loadTask(task.taskId)).schemaVersion).toBe(4);
+    expect(await readFile(store.statePath(task.taskId), 'utf8')).toContain('"schemaVersion": 4');
   });
 });

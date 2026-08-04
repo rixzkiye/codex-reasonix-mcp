@@ -4,12 +4,14 @@ import path from 'node:path';
 import process from 'node:process';
 
 import { BridgeError } from './errors.js';
+import { WIRE_REASONING_EFFORTS, type ReasoningEffort } from './types.js';
 
 export interface BridgeConfig {
   stateDir: string;
   reasonixCommand: string;
   reasonixArgs: string[];
   model: string;
+  reasoningEffort: ReasoningEffort;
   profile: 'delivery';
   networkEnabled: boolean;
   externalSecretScanner?: readonly [string, ...string[]];
@@ -17,6 +19,17 @@ export interface BridgeConfig {
   maxBinaryBytes: number;
   leaseStaleMs: number;
   leaseHeartbeatMs: number;
+}
+
+function parseReasoningEffort(value: string | undefined): ReasoningEffort {
+  const effort = value?.trim() || 'medium';
+  if (!(WIRE_REASONING_EFFORTS as readonly string[]).includes(effort)) {
+    throw new BridgeError(
+      'invalid_request',
+      `CODEX_REASONIX_EFFORT must be one of: ${WIRE_REASONING_EFFORTS.join(', ')}`,
+    );
+  }
+  return effort as ReasoningEffort;
 }
 
 function defaultStateDir(): string {
@@ -60,6 +73,7 @@ export function loadConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig 
     reasonixCommand: process.env.REASONIX_BIN?.trim() || 'reasonix',
     reasonixArgs: [],
     model: process.env.CODEX_REASONIX_MODEL?.trim() || 'deepseek-v4-flash',
+    reasoningEffort: parseReasoningEffort(process.env.CODEX_REASONIX_EFFORT),
     profile: 'delivery',
     networkEnabled: process.env.CODEX_REASONIX_NETWORK === 'on',
     externalSecretScanner: parseScanner(process.env.CODEX_REASONIX_SECRET_SCANNER_ARGV),

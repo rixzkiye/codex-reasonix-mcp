@@ -4,7 +4,7 @@ import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/proto
 import type { ServerNotification, ServerRequest } from '@modelcontextprotocol/sdk/types.js';
 
 import { errorEnvelope } from './errors.js';
-import type { BridgeRuntime } from './runtime.js';
+import type { BridgeRuntime, RuntimeCallContext } from './runtime.js';
 import { SANDBOX_META_KEY } from './sandbox.js';
 import {
   controlInputSchema,
@@ -19,6 +19,27 @@ import {
 import { VERSION } from './version.js';
 
 type Extra = RequestHandlerExtra<ServerRequest, ServerNotification>;
+
+function runtimeContext(extra: Extra): RuntimeCallContext {
+  const progressToken = extra._meta?.progressToken;
+  let progress = 0;
+  return {
+    signal: extra.signal,
+    ...(progressToken === undefined
+      ? {}
+      : {
+          onProgress: async (message: string) => {
+            progress += 1;
+            await extra
+              .sendNotification({
+                method: 'notifications/progress',
+                params: { progressToken, progress, message },
+              })
+              .catch(() => undefined);
+          },
+        }),
+  };
+}
 
 function success(value: Record<string, unknown>) {
   return {
@@ -45,7 +66,7 @@ export function createMcpServer(runtime: BridgeRuntime): McpServer {
         experimental: { [SANDBOX_META_KEY]: {} },
       },
       instructions:
-        'Use reasonix_delegate only after explicit user request or approval for Reasonix implementation. It creates an immutable TaskContractV1, isolated worktree/session, async execution, and supervised finalization; never substitute native Codex subagents for that work. Use native subagents for bounded parallel exploration, tests, triage, or summaries. reasonix_control manages a Reasonix task; reasonix_inspect reads bounded status/evidence. Delegate/finalize require codex/sandbox-state-meta. Never push or merge.',
+        'Use Reasonix only after explicit user approval. Default happy path: one reasonix_delegate waits for review, then one reasonix_control(finalize) waits for the commit; do not poll or steer. New tasks default to worker_lane=fast (direct edits, no Goal/AutoResearch/subagents); use deep only for long-horizon work. Choose the lowest adequate reasoning_effort (low is lowest) and a proportionate execution_timeout_seconds. A delegate wait timeout does not cancel the worker. reasonix_inspect is recovery-only. Copy required_review_criteria from the review bundle into finalize approval. Delegate/finalize require codex/sandbox-state-meta. A completed task returns an isolated commit; cherry-pick it explicitly after review. Never push, merge, or publish.',
     },
   );
 
@@ -54,7 +75,7 @@ export function createMcpServer(runtime: BridgeRuntime): McpServer {
     {
       title: 'Delegate a contract to Reasonix',
       description:
-        'Use only after explicit user request or approval for Reasonix implementation requiring an immutable TaskContractV1, isolated worktree/session, asynchronous execution, and supervised finalization. Never substitute native Codex subagents for approved Reasonix work; use native subagents for bounded parallel exploration, tests, triage, or summaries.',
+        'After explicit user approval, delegate one immutable TaskContractV1 to an isolated Reasonix edit worker. Default wait_mode=review holds this call until review, interaction, failure, or timeout; a wait timeout is recoverable and does not cancel the worker. New tasks default to worker_lane=fast (direct edits; no Goal, AutoResearch, review/task skills, or subagents); use worker_lane=deep only for explicitly long-horizon delivery/goal work. Select the lowest reasoning_effort adequate for the task (low is the lowest supported). Set execution_timeout_seconds proportionately (fast default 600, deep default 3600, maximum 14400); omitted resumes retain the stored deadline. Use background only when the caller intentionally wants asynchronous recovery flow.',
       inputSchema: delegateInputSchema,
       outputSchema: delegateOutputSchema,
       annotations: {
@@ -66,7 +87,11 @@ export function createMcpServer(runtime: BridgeRuntime): McpServer {
     },
     async (args, extra: Extra) => {
       try {
-        return success(delegateOutputSchema.parse(await runtime.delegate(args, extra._meta)));
+        return success(
+          delegateOutputSchema.parse(
+            await runtime.delegate(args, extra._meta, runtimeContext(extra)),
+          ),
+        );
       } catch (error) {
         return failure(error);
       }
@@ -78,7 +103,7 @@ export function createMcpServer(runtime: BridgeRuntime): McpServer {
     {
       title: 'Control a Reasonix task',
       description:
-        'Use only for a Reasonix task created by reasonix_delegate: steer, resolve an interaction, cancel, asynchronously finalize, or close it.',
+        'Control a task created by reasonix_delegate. On the default happy path, call finalize once after reviewing the returned bundle; finalize waits for a committed terminal result. finalize accepts any valid acceptance id in approved_review_criteria; automated ids are ignored for approval but every review-evidence criterion from required_review_criteria must be approved. Use respond, cancel, close, or steer only for explicit recovery or interaction handling. The returned commit is isolated and must be cherry-picked explicitly; this tool never merges or pushes.',
       inputSchema: controlInputSchema,
       outputSchema: controlOutputSchema,
       annotations: {
@@ -91,7 +116,9 @@ export function createMcpServer(runtime: BridgeRuntime): McpServer {
     async (args, extra: Extra) => {
       try {
         return success(
-          controlOutputSchema.parse(await runtime.control(parseControlInput(args), extra._meta)),
+          controlOutputSchema.parse(
+            await runtime.control(parseControlInput(args), extra._meta, runtimeContext(extra)),
+          ),
         );
       } catch (error) {
         return failure(error);
@@ -104,7 +131,7 @@ export function createMcpServer(runtime: BridgeRuntime): McpServer {
     {
       title: 'Inspect a Reasonix task',
       description:
-        'Use for a Reasonix task to read bounded status, evidence, interactions, events, and optionally paginated diff output.',
+        'Recovery-only bounded inspection of status, evidence, interactions, and optional paginated diff or event output. Events are opt-in. The default two-call happy path uses no inspect polling.',
       inputSchema: inspectInputSchema,
       outputSchema: inspectOutputSchema,
       annotations: {

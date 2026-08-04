@@ -18,7 +18,7 @@ paths, LLM router, native-Windows implementation, or Codex source modification.
 ## Release status
 
 The last published stable npm release is `0.1.1`. This source tree is prepared
-as `0.2.0-rc.2`; that version is not available from npm until its GitHub
+as `0.2.0-rc.3`; that version is not available from npm until its GitHub
 prerelease and trusted-publishing workflow complete successfully. Official
 Reasonix `v1.19.0` remains the documented compatibility baseline, while runtime
 capability checks—not a version string—remain authoritative.
@@ -53,7 +53,7 @@ pnpm build
 codex mcp add reasonix-worker -- node /absolute/path/to/codex-reasonix-mcp/dist/index.js
 ```
 
-After `0.2.0-rc.2` is actually published, consumers can pin that exact version
+After `0.2.0-rc.3` is actually published, consumers can pin that exact version
 instead of relying on a moving dist-tag. Prereleases publish under `next`;
 stable releases publish under `latest`.
 
@@ -67,7 +67,9 @@ codex-reasonix-mcp doctor
 ```
 
 It checks Node, Git, platform/WSL, the Reasonix binary and supervisor flags, OS
-sandbox availability, state permissions, and network posture.
+sandbox availability, state permissions, network posture, and that Codex has
+`tool_timeout_sec = 900` under `[mcp_servers.reasonix-worker]`. This explicit
+value is required even when a Codex release provides a shorter default.
 
 The deep lane is explicit, bounded to one Goal, 50,000 cumulative provider
 tokens, and ten minutes, and may incur provider cost:
@@ -87,11 +89,12 @@ privacy-safe partial proof and event-type diagnostics before cleanup.
 The `reasonix_worker` server exposes exactly three tools:
 
 - `reasonix_delegate` validates `TaskContractV1`, creates or resumes the
-  isolated task, and returns while provisioning continues.
+  isolated task, and by default waits for review, interaction, failure, or a
+  bounded timeout.
 - `reasonix_control` steers, answers an interaction, cancels, finalizes, or
   closes a task. At most two post-review repair rounds are accepted.
-- `reasonix_inspect` reads bounded status, evidence, interactions, events,
-  collision evidence, and optional paginated diffs.
+- `reasonix_inspect` reads bounded status, evidence, interactions, collision
+  evidence, and optional paginated diffs. Events are opt-in.
 
 Each tool advertises a concrete success schema and every successful response
 contains matching `structuredContent`. Errors remain `isError` responses with a
@@ -103,6 +106,28 @@ closed-world.
 Codex calls `reasonix_delegate` only after explicit user request or approval for
 Reasonix implementation. Delegate and finalization derive repository authority
 from `codex/sandbox-state-meta`; no model-provided repository path is accepted.
+
+The normal success path is exactly two long-running calls: one delegate with
+the default `wait_mode: "review"`, then one `finalize` that waits for a terminal
+result and returns the worker commit hash. New tasks run on the `worker_lane:
+"fast"` (direct edits in Reasonix economy + normal mode, no Goal/AutoResearch/
+subagents, 600-second default deadline); choose `worker_lane: "deep"` only for
+explicitly long-horizon Delivery + Goal work (3,600-second default).
+`reasoning_effort` is selected per task (`low`, `medium`, `high`, or `max`);
+precedence is task field, then `CODEX_REASONIX_EFFORT`, then `medium`. Choose
+the lowest sufficient effort. `execution_timeout_seconds` is a persisted
+per-task execution deadline; new tasks default by lane (600 fast / 3,600 deep)
+and may request 60–14,400 seconds. The separate delegate wait remains bounded
+to 600 seconds: if it expires, the call returns a recoverable running view
+while the worker continues. Re-delegating the same immutable task can wait
+again without changing its stored execution profile. There is no hard worker
+token ceiling. `path_base` defaults to the
+invocation `cwd`; use `repository` only for legacy repository-root path
+semantics. Inspect/steer are recovery tools, not happy-path polling steps.
+
+Completion creates a commit on the retained worker branch. It does not
+integrate the caller's checkout: after reviewing the returned hash, Codex may
+explicitly `git cherry-pick <hash>`. The bridge never pushes or merges.
 
 ## Shell-first supervision
 

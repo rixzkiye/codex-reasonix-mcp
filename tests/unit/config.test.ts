@@ -9,6 +9,7 @@ const original = {
   xdg: process.env.XDG_STATE_HOME,
   scanner: process.env.CODEX_REASONIX_SECRET_SCANNER_ARGV,
   network: process.env.CODEX_REASONIX_NETWORK,
+  effort: process.env.CODEX_REASONIX_EFFORT,
 };
 
 afterEach(() => {
@@ -17,6 +18,7 @@ afterEach(() => {
     XDG_STATE_HOME: original.xdg,
     CODEX_REASONIX_SECRET_SCANNER_ARGV: original.scanner,
     CODEX_REASONIX_NETWORK: original.network,
+    CODEX_REASONIX_EFFORT: original.effort,
   })) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
@@ -44,6 +46,33 @@ describe('configuration parsing', () => {
     });
   });
 
+  it.each(['low', 'medium', 'high', 'max'] as const)(
+    'accepts supported Reasonix effort %s',
+    (effort) => {
+      process.env.CODEX_REASONIX_EFFORT = effort;
+      expect(loadConfig().reasoningEffort).toBe(effort);
+    },
+  );
+
+  it('rejects legacy minimal effort in new configuration', () => {
+    process.env.CODEX_REASONIX_EFFORT = 'minimal';
+    expect(() => loadConfig()).toThrow(
+      /CODEX_REASONIX_EFFORT must be one of: low, medium, high, max/,
+    );
+  });
+
+  it('defaults Reasonix effort to medium and lets explicit config override the environment', () => {
+    delete process.env.CODEX_REASONIX_EFFORT;
+    expect(loadConfig().reasoningEffort).toBe('medium');
+    process.env.CODEX_REASONIX_EFFORT = 'high';
+    expect(loadConfig({ reasoningEffort: 'low' }).reasoningEffort).toBe('low');
+  });
+
+  it.each(['tiny', 'MAX', 'medium-high'])('rejects unsupported Reasonix effort %s', (effort) => {
+    process.env.CODEX_REASONIX_EFFORT = effort;
+    expect(() => loadConfig()).toThrow(/CODEX_REASONIX_EFFORT must be one of/);
+  });
+
   it.each(['not json', '[]', '[""]', '{"command":"scanner"}'])(
     'rejects unsafe scanner input %s',
     (value) => {
@@ -55,6 +84,7 @@ describe('configuration parsing', () => {
   it('fingerprints only provider posture and changes when that posture changes', () => {
     const base = loadConfig({ stateDir: '/tmp/a' });
     expect(configFingerprint(base)).toBe(configFingerprint({ ...base, stateDir: '/tmp/b' }));
+    expect(configFingerprint(base)).toBe(configFingerprint({ ...base, reasoningEffort: 'high' }));
     expect(configFingerprint(base)).not.toBe(configFingerprint({ ...base, model: 'different' }));
   });
 });

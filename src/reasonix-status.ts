@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { REASONING_EFFORTS } from './types.js';
+
 export const REASONIX_STATUS_METHOD = '_reasonix.io/session/status';
 export const REASONIX_STATUS_UPDATE_METHOD = '_reasonix.io/session/status_update';
 export const REASONIX_STEER_METHOD = '_reasonix.io/session/steer';
@@ -26,7 +28,7 @@ export const reasonixStatusSchema = z
     sessionId: z.string().min(1),
     state: z.enum(['running', 'idle']),
     model: z.string().min(1),
-    effort: z.string().min(1),
+    effort: z.enum(REASONING_EFFORTS),
     mode: z.enum(['normal', 'plan', 'goal']),
     workMode: z.enum(['economy', 'balanced', 'delivery']),
     plannerMode: z.enum(['off', 'on']),

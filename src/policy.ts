@@ -14,6 +14,7 @@ import {
   type TaskContractV1,
 } from './contracts.js';
 import { isCredentialPath, isGitControlPath } from './sensitive-paths.js';
+import { isRuntimeMetadataPath } from './runtime-metadata.js';
 
 export interface StaticCommand {
   argv: [string, ...string[]];
@@ -749,6 +750,14 @@ export async function decidePermission(
         );
   }
   if (kind === 'edit') {
+    if (canonicalPaths.some((item) => isRuntimeMetadataPath(item))) {
+      return denial(
+        params,
+        'runtime_metadata_path',
+        '.reasonix/** is bridge runtime metadata; structured worker writes are forbidden',
+        'Write only contract-scoped repository files.',
+      );
+    }
     if (
       params.toolCall.rawInput !== undefined &&
       canonicalPaths.length > 0 &&

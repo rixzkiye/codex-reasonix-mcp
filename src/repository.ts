@@ -12,11 +12,13 @@ import {
 } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import process from 'node:process';
 
 import type { BridgeConfig } from './config.js';
 import { assertPathInsideWorktree, isWriteAllowed, type TaskContractV1 } from './contracts.js';
 import { BridgeError } from './errors.js';
 import { containsSecret } from './redaction.js';
+import { isRuntimeMetadataPath } from './runtime-metadata.js';
 import { runChecked, runCommand, type CommandResult } from './command.js';
 import { isCredentialPath, isGitControlPath } from './sensitive-paths.js';
 import type { RepositoryIdentity } from './types.js';
@@ -76,6 +78,52 @@ export async function discoverRepository(cwd: string): Promise<RepositoryIdentit
   const head = headResult.stdout.trim();
   const id = createHash('sha256').update(`${root}\0${commonDir}`).digest('hex').slice(0, 24);
   return { id, root, commonDir, head };
+}
+
+export interface GitIdentity {
+  name: string;
+  email: string;
+}
+
+/** Resolves a commit identity at any source or isolated-worktree cwd. */
+export async function resolveGitIdentityAt(
+  cwd: string,
+  bridgeEnvironment: Readonly<Record<string, string | undefined>> = process.env,
+): Promise<GitIdentity> {
+  const environmentName = bridgeEnvironment.GIT_AUTHOR_NAME?.trim();
+  const environmentEmail = bridgeEnvironment.GIT_AUTHOR_EMAIL?.trim();
+  const configEnvironment = Object.fromEntries(
+    ['HOME', 'XDG_CONFIG_HOME'].flatMap((key) => {
+      const value = bridgeEnvironment[key]?.trim();
+      return value ? [[key, value]] : [];
+    }),
+  );
+  const [configuredName, configuredEmail] = await Promise.all([
+    environmentName
+      ? undefined
+      : git(cwd, ['config', '--get', 'user.name'], 10_000, 8 * 1024 * 1024, configEnvironment),
+    environmentEmail
+      ? undefined
+      : git(cwd, ['config', '--get', 'user.email'], 10_000, 8 * 1024 * 1024, configEnvironment),
+  ]);
+  const name = environmentName || configuredName?.stdout.trim();
+  const email = environmentEmail || configuredEmail?.stdout.trim();
+  if (!name || !email) {
+    throw new BridgeError(
+      'invalid_request',
+      'Git author identity is required before delegation; set GIT_AUTHOR_NAME and GIT_AUTHOR_EMAIL or configure user.name and user.email',
+      { missing: [...(!name ? ['name'] : []), ...(!email ? ['email'] : [])] },
+    );
+  }
+  return { name, email };
+}
+
+/** Resolves the commit author before any provider process is started. */
+export async function resolveGitIdentity(
+  repository: RepositoryIdentity,
+  bridgeEnvironment: Readonly<Record<string, string | undefined>> = process.env,
+): Promise<GitIdentity> {
+  return await resolveGitIdentityAt(repository.root, bridgeEnvironment);
 }
 
 export async function assertSourceClean(repository: RepositoryIdentity): Promise<void> {
@@ -261,7 +309,13 @@ export async function changedFiles(worktree: string): Promise<string[]> {
     gitChecked(worktree, ['diff', '--no-renames', '--name-only', '-z', 'HEAD']),
     gitChecked(worktree, ['ls-files', '--others', '--exclude-standard', '-z']),
   ]);
-  return [...new Set([...nulList(tracked.stdout), ...nulList(untracked.stdout)])].sort();
+  // Untracked .reasonix/** entries are runtime metadata and never task changes.
+  return [
+    ...new Set([
+      ...nulList(tracked.stdout),
+      ...nulList(untracked.stdout).filter((file) => !isRuntimeMetadataPath(file)),
+    ]),
+  ].sort();
 }
 
 export async function assertNoWorkerCommits(worktree: string, baseCommit: string): Promise<void> {
@@ -284,6 +338,12 @@ export async function assertChangedFilesInScope(
   const violations: string[] = [];
   for (const file of files) {
     const canonical = await assertPathInsideWorktree(worktree, file);
+    // Untracked runtime metadata never reaches this list; a .reasonix path here
+    // is a tracked change and is forbidden regardless of write_scope.
+    if (isRuntimeMetadataPath(file) || isRuntimeMetadataPath(canonical)) {
+      violations.push(file);
+      continue;
+    }
     if (
       !isWriteAllowed(contract, file) ||
       !isWriteAllowed(contract, canonical) ||
@@ -329,31 +389,123 @@ export async function assertFileSizes(
   }
 }
 
-export async function workingDiff(worktree: string): Promise<string> {
-  const tracked = await gitChecked(worktree, ['diff', '--no-ext-diff', '--binary', 'HEAD'], 60_000);
-  const untracked = await changedFiles(worktree);
-  const trackedSet = new Set(
-    nulList((await gitChecked(worktree, ['diff', '--name-only', '-z', 'HEAD'])).stdout),
-  );
-  const chunks = [tracked.stdout];
-  for (const file of untracked.filter((item) => !trackedSet.has(item))) {
-    const result = await git(worktree, ['diff', '--no-index', '--binary', '--', '/dev/null', file]);
-    if (result.exitCode === 1) chunks.push(result.stdout);
+/**
+ * Builds a canonical snapshot of the worktree against a base commit using a
+ * temporary index (never the real index): tracked edits, untracked additions,
+ * deletions, and mode changes all appear in one deterministic tree/diff.
+ * Untracked `.reasonix/**` runtime metadata is excluded from the snapshot.
+ */
+export interface CanonicalWorktreeSnapshot {
+  tree: string;
+  diff: string;
+  stat: string;
+  files: string[];
+}
+
+async function untrackedRuntimeMetadata(worktree: string): Promise<string[]> {
+  const result = await gitChecked(worktree, ['ls-files', '--others', '--exclude-standard', '-z']);
+  return nulList(result.stdout).filter((file) => isRuntimeMetadataPath(file));
+}
+
+export async function canonicalWorktreeSnapshot(
+  worktree: string,
+  baseRef = 'HEAD',
+): Promise<CanonicalWorktreeSnapshot> {
+  const transactionDir = await mkdtemp(path.join(os.tmpdir(), 'codex-reasonix-index-'));
+  const temporaryIndex = path.join(transactionDir, 'index');
+  const environment = { GIT_INDEX_FILE: temporaryIndex, GIT_OPTIONAL_LOCKS: '0' };
+  try {
+    await gitChecked(worktree, ['read-tree', baseRef], 60_000, environment);
+    await gitChecked(worktree, ['add', '-A', '--', '.'], 5 * 60_000, environment);
+    const runtimeMetadata = await untrackedRuntimeMetadata(worktree);
+    if (runtimeMetadata.length > 0) {
+      await gitChecked(
+        worktree,
+        ['update-index', '--force-remove', '--', ...runtimeMetadata],
+        60_000,
+        environment,
+      );
+    }
+    const [tree, diff, stat, files] = await Promise.all([
+      gitChecked(worktree, ['write-tree'], 60_000, environment),
+      gitChecked(worktree, ['diff', '--cached', '--no-ext-diff', '--binary'], 60_000, environment),
+      gitChecked(worktree, ['diff', '--cached', '--stat'], 60_000, environment),
+      gitChecked(worktree, ['diff', '--cached', '--name-only', '-z'], 60_000, environment),
+    ]);
+    return {
+      tree: tree.stdout.trim(),
+      diff: diff.stdout,
+      stat: stat.stdout,
+      files: [...new Set(nulList(files.stdout))].sort(),
+    };
+  } finally {
+    await rm(transactionDir, { recursive: true, force: true });
   }
-  return chunks.join('');
+}
+
+/** Canonical worktree tree hash (runtime metadata excluded), used as the review snapshot. */
+export async function canonicalWorktreeTree(worktree: string, baseRef = 'HEAD'): Promise<string> {
+  return (await canonicalWorktreeSnapshot(worktree, baseRef)).tree;
+}
+
+/** Canonical reviewed/staged tree hash from the real index after explicit staging. */
+export async function stagedTree(worktree: string): Promise<string> {
+  return (await gitChecked(worktree, ['write-tree'])).stdout.trim();
+}
+
+export async function workingDiff(worktree: string): Promise<string> {
+  return (await canonicalWorktreeSnapshot(worktree)).diff;
 }
 
 export async function diffStat(worktree: string): Promise<string> {
-  const tracked = await gitChecked(worktree, ['diff', '--stat', 'HEAD']);
-  const trackedSet = new Set(
-    nulList((await gitChecked(worktree, ['diff', '--name-only', '-z', 'HEAD'])).stdout),
-  );
-  const chunks = [tracked.stdout];
-  for (const file of (await changedFiles(worktree)).filter((item) => !trackedSet.has(item))) {
-    const result = await git(worktree, ['diff', '--no-index', '--stat', '--', '/dev/null', file]);
-    if (result.exitCode === 1) chunks.push(result.stdout);
+  return (await canonicalWorktreeSnapshot(worktree)).stat;
+}
+
+export interface CheckIgnoreOptions {
+  quiet?: boolean;
+  verbose?: boolean;
+}
+
+/**
+ * Read-only `git check-ignore` with explicit repository-relative paths and only
+ * the safe quiet/verbose flags. Stdin, path escapes, and unknown options are
+ * rejected by construction; exit code 1 (nothing ignored) is not an error.
+ */
+export async function checkIgnore(
+  worktree: string,
+  paths: string[],
+  options: CheckIgnoreOptions = {},
+): Promise<string[]> {
+  if (paths.length === 0) {
+    throw new BridgeError('invalid_request', 'check-ignore requires at least one explicit path');
   }
-  return chunks.join('');
+  for (const candidate of paths) {
+    if (
+      !candidate ||
+      candidate.includes('\0') ||
+      candidate.startsWith('-') ||
+      path.posix.isAbsolute(candidate) ||
+      path.win32.isAbsolute(candidate) ||
+      /^[A-Za-z]:/.test(candidate) ||
+      candidate.split('/').includes('..')
+    ) {
+      throw new BridgeError(
+        'invalid_request',
+        `check-ignore path is not a safe repository-relative path: ${candidate}`,
+      );
+    }
+  }
+  const args = ['check-ignore'];
+  if (options.quiet) args.push('--quiet');
+  if (options.verbose) args.push('--verbose');
+  const result = await git(worktree, [...args, '--', ...paths], 30_000, 8 * 1024 * 1024);
+  if (result.exitCode !== 0 && result.exitCode !== 1) {
+    throw new BridgeError('invalid_state', 'git check-ignore failed', {
+      exitCode: result.exitCode,
+      stderr: result.stderr.slice(0, 4_096),
+    });
+  }
+  return result.stdout.split('\n').filter(Boolean);
 }
 
 export async function stageExplicitFiles(worktree: string, files: string[]): Promise<void> {
@@ -369,19 +521,68 @@ export async function stageExplicitFiles(worktree: string, files: string[]): Pro
       { staged: alreadyStaged },
     );
   }
-  await gitChecked(worktree, ['add', '--', ...files], 5 * 60_000);
+  try {
+    await gitChecked(worktree, ['add', '--', ...files], 5 * 60_000);
+    const staged = nulList(
+      (await gitChecked(worktree, ['diff', '--cached', '--name-only', '-z'])).stdout,
+    ).sort();
+    const expected = [...new Set(files)].sort();
+    if (JSON.stringify(staged) !== JSON.stringify(expected)) {
+      throw new BridgeError(
+        'ownership_ambiguous',
+        'Staged file list differs from explicit task file list',
+        {
+          staged,
+          expected,
+        },
+      );
+    }
+  } catch (error) {
+    try {
+      await unstageExplicitFiles(worktree, files);
+    } catch (recoveryError) {
+      const cause = error instanceof BridgeError ? error : undefined;
+      const recovery = recoveryError instanceof BridgeError ? recoveryError : undefined;
+      throw new BridgeError(
+        'ownership_ambiguous',
+        'Explicit staging failed and the bridge-owned index could not be restored',
+        {
+          causeCode: cause?.code ?? 'internal_error',
+          causeMessage: error instanceof Error ? error.message : String(error),
+          recoveryCode: recovery?.code ?? 'internal_error',
+          recoveryMessage:
+            recoveryError instanceof Error ? recoveryError.message : String(recoveryError),
+          indexRecoveryFailed: true,
+        },
+      );
+    }
+    throw error;
+  }
+}
+
+/** Restores the bridge-owned index to HEAD without changing working-tree edits. */
+export async function unstageExplicitFiles(worktree: string, files: string[]): Promise<void> {
   const staged = nulList(
     (await gitChecked(worktree, ['diff', '--cached', '--name-only', '-z'])).stdout,
-  ).sort();
-  const expected = [...files].sort();
-  if (JSON.stringify(staged) !== JSON.stringify(expected)) {
+  );
+  if (staged.length === 0) return;
+  const owned = new Set(files);
+  const bridgeOwned = staged.filter((file) => owned.has(file));
+  if (bridgeOwned.length > 0) {
+    await gitChecked(worktree, ['reset', '--quiet', 'HEAD', '--', ...bridgeOwned], 60_000);
+  }
+  const remaining = nulList(
+    (await gitChecked(worktree, ['diff', '--cached', '--name-only', '-z'])).stdout,
+  );
+  const remainingOwned = remaining.filter((file) => owned.has(file));
+  const unexpected = remaining.filter((file) => !owned.has(file));
+  if (remainingOwned.length > 0 || unexpected.length > 0) {
     throw new BridgeError(
       'ownership_ambiguous',
-      'Staged file list differs from explicit task file list',
-      {
-        staged,
-        expected,
-      },
+      remainingOwned.length > 0
+        ? 'Unable to restore the bridge-owned index'
+        : 'Index contains unowned paths after bridge staging recovery',
+      { remaining, remainingOwned, unexpected },
     );
   }
 }
@@ -393,7 +594,7 @@ export async function stagedDiff(worktree: string): Promise<string> {
 export async function assertStagedChecks(worktree: string): Promise<void> {
   const whitespace = await git(worktree, ['diff', '--cached', '--check']);
   if (whitespace.exitCode !== 0) {
-    throw new BridgeError('commit_failed', 'Staged diff contains whitespace errors', {
+    throw new BridgeError('verification_failed', 'Staged diff contains whitespace errors', {
       errors: whitespace.stdout.slice(0, 8_192),
     });
   }
@@ -403,6 +604,7 @@ export async function createAtomicCommit(
   worktree: string,
   baseCommit: string,
   message: string,
+  identity: GitIdentity,
 ): Promise<string> {
   const before = (await gitChecked(worktree, ['rev-parse', 'HEAD'])).stdout.trim();
   if (before !== baseCommit) {
@@ -414,7 +616,7 @@ export async function createAtomicCommit(
   }
   const untracked = nulList(
     (await gitChecked(worktree, ['ls-files', '--others', '--exclude-standard', '-z'])).stdout,
-  );
+  ).filter((file) => !isRuntimeMetadataPath(file));
   const unstaged = await git(worktree, ['diff', '--quiet', '--no-ext-diff']);
   if (unstaged.exitCode !== 0 || untracked.length > 0) {
     throw new BridgeError('ownership_ambiguous', 'Worktree changed after staged-diff review', {
@@ -437,7 +639,13 @@ export async function createAtomicCommit(
       encoding: 'utf8',
       mode: 0o600,
     });
-    const hookEnvironment = { GIT_INDEX_FILE: temporaryIndex };
+    const hookEnvironment = {
+      GIT_INDEX_FILE: temporaryIndex,
+      GIT_AUTHOR_NAME: identity.name,
+      GIT_AUTHOR_EMAIL: identity.email,
+      GIT_COMMITTER_NAME: identity.name,
+      GIT_COMMITTER_EMAIL: identity.email,
+    };
     const reviewedTree = (
       await gitChecked(worktree, ['write-tree'], 60_000, hookEnvironment)
     ).stdout.trim();
@@ -476,12 +684,15 @@ export async function createAtomicCommit(
         gitChecked(worktree, ['ls-files', '--others', '--exclude-standard', '-z']),
       ]);
     const unstagedAfterHooks = await git(worktree, ['diff', '--quiet', '--no-ext-diff']);
+    const untrackedAfterHooksList = nulList(untrackedAfterHooks.stdout).filter(
+      (file) => !isRuntimeMetadataPath(file),
+    );
     if (
       headAfterHooks.stdout.trim() !== baseCommit ||
       realTreeAfterHooks.stdout.trim() !== reviewedTree ||
       hookTreeAfterHooks.stdout.trim() !== reviewedTree ||
       unstagedAfterHooks.exitCode !== 0 ||
-      untrackedAfterHooks.stdout.length > 0
+      untrackedAfterHooksList.length > 0
     ) {
       throw new BridgeError(
         'ownership_ambiguous',
@@ -496,6 +707,7 @@ export async function createAtomicCommit(
       ['commit-tree', reviewedTree, '-p', baseCommit, '-F', messagePath],
       60_000,
       2 * 1024 * 1024,
+      hookEnvironment,
     );
     const commitHash = object.stdout.trim();
     if (object.exitCode !== 0 || !/^[0-9a-f]{40,64}$/.test(commitHash)) {
@@ -522,12 +734,16 @@ export async function createAtomicCommit(
       gitChecked(worktree, ['status', '--porcelain=v1', '-z']),
     ]);
     const count = Number.parseInt(countResult.stdout.trim(), 10);
+    const statusWithoutRuntimeMetadata = nulList(status.stdout).filter((entry) => {
+      if (!entry.startsWith('?? ')) return true;
+      return !isRuntimeMetadataPath(entry.slice(3));
+    });
     if (
       after.stdout.trim() !== commitHash ||
       tree.stdout.trim() !== reviewedTree ||
       parents.stdout.trim() !== baseCommit ||
       count !== 1 ||
-      status.stdout.length > 0
+      statusWithoutRuntimeMetadata.length > 0
     ) {
       throw new BridgeError('commit_failed', 'Atomic commit postconditions failed', {
         count,

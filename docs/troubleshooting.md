@@ -9,6 +9,19 @@ codex-reasonix-mcp doctor
 Its JSON report marks required failures. Standard doctor starts no ACP session
 and makes no provider call.
 
+## Codex MCP call times out early
+
+Both delegate-to-review and finalize-to-terminal are intentionally
+long-running. Configure the worker explicitly in `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.reasonix-worker]
+tool_timeout_sec = 900
+```
+
+Rerun doctor after restarting Codex. A missing value or any value below 900 is
+a required failure; do not rely on Codex's version-dependent default.
+
 ## Deep conformance
 
 Only run this when one bounded live provider Goal, up to 50,000 cumulative
@@ -75,7 +88,7 @@ is repaired. Core collision scanning remains active without the hook.
 
 ## Task paused after restart
 
-Call `reasonix_inspect` first. Valid v1 state migrates atomically to v2 during
+Call `reasonix_inspect` first. Valid older state migrates atomically to v3 during
 load. Corrupt, noncanonical, or unknown future state is rejected and must be
 manually investigated—never edit the version number to force acceptance.
 
@@ -84,10 +97,11 @@ with resume enabled and unchanged contract/base/config posture.
 
 ## Verification or commit failed
 
-Inspect verification, acceptance evidence, events, collision evidence, and the
-bounded diff. `allowed_commands` results do not count as acceptance evidence.
-No completion is claimed when verification, secret scan, source/scope check,
-hook, staged diff, or commit fails. The branch/worktree are retained.
+Inspect verification, acceptance evidence, opt-in events, collision evidence,
+and the bounded diff. `allowed_commands` results do not count as acceptance
+evidence. A verification failure before commit returns to `review_required`
+with repairable evidence. `commit_failed` is reserved for commit/ref failures;
+neither state is reported as completed. The branch/worktree are retained.
 
 ## Archive and prune refused
 

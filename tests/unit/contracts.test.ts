@@ -12,7 +12,9 @@ import {
   isCommandAllowedByContract,
   isWriteAllowed,
   lintTaskContract,
+  normalizeContractPaths,
   parseTaskContract,
+  parseTaskContractForInvocation,
   renderGoalPrompt,
 } from '../../src/contracts.js';
 import { BridgeError } from '../../src/errors.js';
@@ -30,6 +32,109 @@ describe('TaskContractV1', () => {
     expect(first.verification[0]?.cwd).toBe('.');
     expect(contractHash(first)).toBe(contractHash(second));
     expect(canonicalContractJson(first)).toMatch(/"schema_version": 1/);
+  });
+
+  it('defaults administrative arrays while retaining required delivery fields', () => {
+    const contract = parseTaskContract({
+      schema_version: 1,
+      objective: 'Implement the requested change',
+      user_outcome: 'The change works',
+      write_scope: ['result.txt'],
+      acceptance_criteria: [{ id: 'review', requirement: 'Review passes', evidence: 'review' }],
+      verification: [],
+    });
+
+    expect(contract).toMatchObject({
+      verified_context: [],
+      forbidden_scope: [],
+      invariants: [],
+      non_goals: [],
+      pause_conditions: [],
+    });
+    expect(contract).not.toHaveProperty('allowed_commands');
+  });
+
+  it('allows repository root as verified context but not as write scope', () => {
+    const contract = parseTaskContract({
+      ...contractFixture(),
+      verified_context: [{ path: '.', reason: 'The whole repository was inspected' }],
+    });
+    expect(contract.verified_context[0]?.path).toBe('.');
+    expect(() => parseTaskContract({ ...contractFixture(), write_scope: ['.'] })).toThrow(
+      /repository root/,
+    );
+  });
+
+  it('normalizes every contract path from a nested invocation cwd before hashing', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'contract-nested-repo-'));
+    await mkdir(path.join(root, 'packages', 'app'), { recursive: true });
+    const input = {
+      ...contractFixture(),
+      verified_context: [{ path: '.', reason: 'Nested package context' }],
+      write_scope: ['src/**'],
+      forbidden_scope: ['src/generated/**'],
+      verification: [{ ...contractFixture().verification[0], cwd: '.', argv: ['pnpm', 'test'] }],
+      allowed_commands: [{ id: 'lint', argv: ['pnpm', 'lint'], cwd: 'tools' }],
+    };
+    const nested = parseTaskContractForInvocation(input, {
+      repositoryRoot: root,
+      invocationCwd: path.join(root, 'packages', 'app'),
+      pathBase: 'cwd',
+    });
+
+    expect(nested.verified_context[0]?.path).toBe('packages/app');
+    expect(nested.write_scope).toEqual(['packages/app/src/**']);
+    expect(nested.forbidden_scope).toEqual(['packages/app/src/generated/**']);
+    expect(nested.verification[0]?.cwd).toBe('packages/app');
+    expect(nested.allowed_commands?.[0]?.cwd).toBe('packages/app/tools');
+    expect(contractHash(nested)).toBe(
+      contractHash(
+        parseTaskContractForInvocation(input, {
+          repositoryRoot: root,
+          invocationCwd: path.join(root, 'packages', 'app'),
+          pathBase: 'cwd',
+        }),
+      ),
+    );
+  });
+
+  it('canonicalizes a symlinked invocation cwd before repository-relative mapping', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'contract-symlink-repo-'));
+    await mkdir(path.join(root, 'packages', 'app'), { recursive: true });
+    const aliasRoot = await mkdtemp(path.join(os.tmpdir(), 'contract-symlink-alias-'));
+    const alias = path.join(aliasRoot, 'app');
+    await symlink(path.join(root, 'packages', 'app'), alias);
+
+    const contract = parseTaskContractForInvocation(contractFixture(), {
+      repositoryRoot: root,
+      invocationCwd: alias,
+      pathBase: 'cwd',
+    });
+    expect(contract.write_scope).toEqual(['packages/app/result.txt']);
+    expect(contract.verification[0]?.cwd).toBe('packages/app');
+  });
+
+  it('preserves legacy repository-root path semantics explicitly', () => {
+    const contract = parseTaskContract(contractFixture());
+    expect(
+      normalizeContractPaths(contract, {
+        repositoryRoot: '/repo',
+        invocationCwd: '/repo/packages/app',
+        pathBase: 'repository',
+      }),
+    ).toBe(contract);
+  });
+
+  it('rejects an invocation cwd outside the repository', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'contract-inside-'));
+    const outside = await mkdtemp(path.join(os.tmpdir(), 'contract-outside-'));
+    expect(() =>
+      parseTaskContractForInvocation(contractFixture(), {
+        repositoryRoot: root,
+        invocationCwd: outside,
+        pathBase: 'cwd',
+      }),
+    ).toThrow(/inside the repository root/);
   });
 
   it('preserves the legacy contract hash when allowed_commands is absent', () => {
@@ -86,6 +191,83 @@ describe('TaskContractV1', () => {
     expect(contract.allowed_commands?.[0]).not.toHaveProperty('proves');
   });
 
+  it('deduplicates identical commands and keeps verification automatically allowed', () => {
+    const fixture = contractFixture();
+    const verifier = fixture.verification[0]!;
+    const contract = parseTaskContract({
+      ...fixture,
+      verification: [verifier, { ...verifier }],
+      allowed_commands: [
+        {
+          id: verifier.id,
+          argv: [...verifier.argv],
+          cwd: verifier.cwd,
+          timeout_seconds: verifier.timeout_seconds,
+        },
+        { id: 'format', argv: ['pnpm', 'format'] },
+        { id: 'format', argv: ['pnpm', 'format'] },
+      ],
+    });
+
+    expect(contract.verification).toHaveLength(1);
+    expect(contract.allowed_commands?.map((command) => command.id)).toEqual(['format']);
+    expect(contractAllowedCommands(contract).map((command) => command.id)).toEqual([
+      'verify_result',
+      'format',
+    ]);
+  });
+
+  it('deduplicates commands after applying cwd and timeout defaults', () => {
+    const fixture = contractFixture();
+    const verifier = { ...fixture.verification[0]!, cwd: undefined, timeout_seconds: undefined };
+    const contract = parseTaskContract({
+      ...fixture,
+      verification: [verifier, { ...verifier, cwd: '.', timeout_seconds: 600 }],
+      allowed_commands: [
+        { id: 'format', argv: ['pnpm', 'format'] },
+        { id: 'format', argv: ['pnpm', 'format'], cwd: '.', timeout_seconds: 120 },
+      ],
+    });
+
+    expect(contract.verification).toHaveLength(1);
+    expect(contract.allowed_commands).toHaveLength(1);
+    expect(
+      lintTaskContract({
+        ...fixture,
+        verification: [verifier, { ...verifier, cwd: '.', timeout_seconds: 600 }],
+      }),
+    ).toEqual([]);
+  });
+
+  it('aggregates incompatible command ids with every other lint issue', () => {
+    const fixture = contractFixture();
+    const issues = lintTaskContract({
+      ...fixture,
+      write_scope: ['../escape'],
+      verification: [
+        fixture.verification[0],
+        { ...fixture.verification[0], argv: ['pnpm', 'test'], proves: ['missing'] },
+      ],
+      allowed_commands: [{ id: 'verify_result', argv: ['pnpm', 'lint'] }],
+    });
+
+    expect(issues.map((issue) => issue.path)).toEqual(
+      expect.arrayContaining([
+        'write_scope.0',
+        'verification.1.id',
+        'allowed_commands.0.id',
+        'verification.1.proves.0',
+      ]),
+    );
+    expect(() =>
+      parseTaskContract({
+        ...fixture,
+        write_scope: ['../escape'],
+        allowed_commands: [{ id: 'verify_result', argv: ['pnpm', 'lint'] }],
+      }),
+    ).toThrow(BridgeError);
+  });
+
   it('lints all safely-evaluable semantic problems together', () => {
     const fixture = contractFixture();
     const issues = lintTaskContract({
@@ -107,6 +289,27 @@ describe('TaskContractV1', () => {
       ]),
     );
     expect(issues).toHaveLength(6);
+  });
+
+  it('adds safely evaluable semantic issues to structural schema failures', () => {
+    const fixture = contractFixture();
+    const issues = lintTaskContract({
+      ...fixture,
+      objective: 42,
+      write_scope: ['../escape'],
+      acceptance_criteria: [...fixture.acceptance_criteria, { ...fixture.acceptance_criteria[0] }],
+      verification: [{ ...fixture.verification[0], proves: ['unknown'] }],
+    });
+
+    expect(issues.map((issue) => issue.path)).toEqual(
+      expect.arrayContaining([
+        'objective',
+        'write_scope.0',
+        'acceptance_criteria.1.id',
+        'verification.0.proves.0',
+        'verification',
+      ]),
+    );
   });
 
   it.each(['/absolute', '../escape', 'src/../../escape', 'C:\\escape'])(

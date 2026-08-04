@@ -1,6 +1,11 @@
 import type { BridgeConfig } from './config.js';
 import { StateStore } from './state.js';
-import type { ControlInput, DelegateInput, InspectInput } from './runtime/api.js';
+import type {
+  ControlInput,
+  DelegateInput,
+  InspectInput,
+  RuntimeCallContext,
+} from './runtime/api.js';
 import { CollisionController } from './runtime/collision.js';
 import { FinalizationController } from './runtime/finalization.js';
 import { InspectionController } from './runtime/inspection.js';
@@ -9,7 +14,13 @@ import { PermissionController } from './runtime/permissions.js';
 import { SessionSupervisor } from './runtime/session-supervision.js';
 
 export { INSPECT_SECTIONS } from './runtime/api.js';
-export type { ControlInput, DelegateInput, InspectInput, InspectSection } from './runtime/api.js';
+export type {
+  ControlInput,
+  DelegateInput,
+  InspectInput,
+  InspectSection,
+  RuntimeCallContext,
+} from './runtime/api.js';
 export { assertSupportedPlatform } from './runtime/collision.js';
 export { makeTaskRecordForTest } from './runtime/shared.js';
 
@@ -57,6 +68,7 @@ export class BridgeRuntime {
       permissions: this.permissions,
       sessions: this.sessions,
       finalization: this.finalization,
+      inspection: this.inspection,
     });
   }
 
@@ -66,12 +78,20 @@ export class BridgeRuntime {
     return await this.store.recoverInterruptedTasks();
   }
 
-  async delegate(input: DelegateInput, requestMeta: unknown): Promise<Record<string, unknown>> {
-    return await this.operations.delegate(input, requestMeta);
+  async delegate(
+    input: DelegateInput,
+    requestMeta: unknown,
+    context?: RuntimeCallContext,
+  ): Promise<Record<string, unknown>> {
+    return await this.operations.delegate(input, requestMeta, context);
   }
 
-  async control(input: ControlInput, requestMeta: unknown): Promise<Record<string, unknown>> {
-    return await this.operations.control(input, requestMeta);
+  async control(
+    input: ControlInput,
+    requestMeta: unknown,
+    context?: RuntimeCallContext,
+  ): Promise<Record<string, unknown>> {
+    return await this.operations.control(input, requestMeta, context);
   }
 
   async inspect(input: InspectInput): Promise<Record<string, unknown>> {

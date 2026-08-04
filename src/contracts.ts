@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { lstat, realpath } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -43,6 +44,18 @@ export const allowedCommandSchema = z
   })
   .strict();
 
+export const fileAssertionSchema = z
+  .object({
+    id: idSchema,
+    path: z.string().min(1).max(1_024),
+    // Meaning is exact UTF-8 bytes, including the trailing newline; never trimmed.
+    expected_utf8: z.string().max(64 * 1024),
+    proves: z.array(idSchema).min(1).max(256),
+  })
+  .strict();
+
+export type FileAssertion = z.infer<typeof fileAssertionSchema>;
+
 export const taskContractSchema = z
   .object({
     schema_version: z.literal(1),
@@ -50,15 +63,17 @@ export const taskContractSchema = z
     user_outcome: textSchema,
     verified_context: z
       .array(z.object({ path: z.string().min(1).max(1_024), reason: textSchema }).strict())
-      .max(1_000),
+      .max(1_000)
+      .default([]),
     write_scope: z.array(z.string().min(1).max(1_024)).min(1).max(1_000),
-    forbidden_scope: z.array(z.string().min(1).max(1_024)).max(1_000),
-    invariants: z.array(textSchema).max(1_000),
-    non_goals: z.array(textSchema).max(1_000),
+    forbidden_scope: z.array(z.string().min(1).max(1_024)).max(1_000).default([]),
+    invariants: z.array(textSchema).max(1_000).default([]),
+    non_goals: z.array(textSchema).max(1_000).default([]),
     acceptance_criteria: z.array(acceptanceCriterionSchema).min(1).max(1_000),
     verification: z.array(verificationCommandSchema).max(256),
     allowed_commands: z.array(allowedCommandSchema).max(256).optional(),
-    pause_conditions: z.array(textSchema).max(1_000),
+    file_assertions: z.array(fileAssertionSchema).max(256).optional(),
+    pause_conditions: z.array(textSchema).max(1_000).default([]),
   })
   .strict();
 
@@ -69,6 +84,14 @@ export type AllowedCommand = z.infer<typeof allowedCommandSchema>;
 export interface ContractLintIssue {
   path: string;
   message: string;
+}
+
+export type ContractPathBase = 'cwd' | 'repository';
+
+export interface ContractPathContext {
+  invocationCwd: string;
+  repositoryRoot: string;
+  pathBase: ContractPathBase;
 }
 
 function normalizeRelative(value: string, allowDot: boolean, field: string): string {
@@ -105,18 +128,60 @@ export function normalizeRepositoryPath(value: string, field = 'path'): string {
   return normalizeRelative(value, false, field);
 }
 
+export function normalizeVerifiedContextPath(
+  value: string,
+  field = 'verified_context.path',
+): string {
+  return normalizeRelative(value, true, field);
+}
+
 export function normalizeRepositoryCwd(value = '.', field = 'verification.cwd'): string {
   return normalizeRelative(value, true, field);
 }
 
-function uniqueIds(values: Array<{ id: string }>, field: string): void {
+function commandKey(
+  command: {
+    argv: readonly string[];
+    cwd?: string;
+    timeout_seconds?: number;
+  },
+  defaultTimeout: number,
+): string {
+  return JSON.stringify([
+    command.argv,
+    normalizeRepositoryCwd(command.cwd),
+    command.timeout_seconds ?? defaultTimeout,
+  ]);
+}
+
+function crossCommandKey(command: {
+  argv: readonly string[];
+  cwd?: string;
+  timeout_seconds?: number;
+}): string {
+  return JSON.stringify([
+    command.argv,
+    normalizeRepositoryCwd(command.cwd),
+    command.timeout_seconds,
+  ]);
+}
+
+function deduplicateCommands<T extends { id: string; argv: readonly string[]; cwd?: string }>(
+  commands: readonly T[],
+  defaultTimeout: number,
+  includeEvidence = false,
+): T[] {
   const seen = new Set<string>();
-  for (const value of values) {
-    if (seen.has(value.id)) {
-      throw new BridgeError('invalid_contract', `${field} contains duplicate id: ${value.id}`);
-    }
-    seen.add(value.id);
-  }
+  return commands.filter((command) => {
+    const key = `${command.id}\0${commandKey(command, defaultTimeout)}${
+      includeEvidence && 'proves' in command
+        ? `\0${JSON.stringify((command as T & { proves: readonly string[] }).proves)}`
+        : ''
+    }`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 export function parseTaskContract(input: unknown): TaskContractV1 {
@@ -130,11 +195,46 @@ export function parseTaskContract(input: unknown): TaskContractV1 {
     });
   }
 
+  const semanticIssues = lintRawTaskContract(parsed.data);
+  if (semanticIssues.length > 0) {
+    throw new BridgeError(
+      'invalid_contract',
+      `TaskContractV1 validation failed: ${semanticIssues.map((issue) => issue.message).join('; ')}`,
+      {
+        issues: semanticIssues,
+      },
+    );
+  }
+
+  const verification = deduplicateCommands(parsed.data.verification, 600, true).map((item) => ({
+    ...item,
+    cwd: normalizeRepositoryCwd(item.cwd),
+    timeout_seconds: item.timeout_seconds ?? 600,
+  }));
+  const verificationInputKeys = new Set(
+    parsed.data.verification.map((item) => `${item.id}\0${crossCommandKey(item)}`),
+  );
+  const allowedCommands = deduplicateCommands(parsed.data.allowed_commands ?? [], 120)
+    .filter((item) => !verificationInputKeys.has(`${item.id}\0${crossCommandKey(item)}`))
+    .map((item) => ({
+      id: item.id,
+      argv: item.argv,
+      cwd: normalizeRepositoryCwd(item.cwd, 'allowed_commands.cwd'),
+      timeout_seconds: item.timeout_seconds ?? 120,
+    }));
+
+  const fileAssertions = deduplicateFileAssertions(parsed.data.file_assertions ?? []).map(
+    (item) => ({
+      ...item,
+      path: normalizeRepositoryPath(item.path, 'file_assertions.path'),
+    }),
+  );
+
   const contract: TaskContractV1 = {
     ...parsed.data,
     verified_context: parsed.data.verified_context.map((item) => ({
       ...item,
-      path: normalizeRepositoryPath(item.path, 'verified_context.path'),
+      path: normalizeVerifiedContextPath(item.path),
     })),
     write_scope: parsed.data.write_scope.map((item) =>
       normalizeRepositoryPath(item, 'write_scope'),
@@ -142,57 +242,114 @@ export function parseTaskContract(input: unknown): TaskContractV1 {
     forbidden_scope: parsed.data.forbidden_scope.map((item) =>
       normalizeRepositoryPath(item, 'forbidden_scope'),
     ),
-    verification: parsed.data.verification.map((item) => ({
-      ...item,
-      cwd: normalizeRepositoryCwd(item.cwd),
-      timeout_seconds: item.timeout_seconds ?? 600,
-    })),
+    verification,
     ...(parsed.data.allowed_commands
       ? {
-          allowed_commands: parsed.data.allowed_commands.map((item) => ({
-            id: item.id,
-            argv: item.argv,
-            cwd: normalizeRepositoryCwd(item.cwd, 'allowed_commands.cwd'),
-            timeout_seconds: item.timeout_seconds ?? 120,
+          allowed_commands: allowedCommands,
+        }
+      : {}),
+    ...(parsed.data.file_assertions
+      ? {
+          file_assertions: fileAssertions,
+        }
+      : {}),
+  };
+  return contract;
+}
+
+function deduplicateFileAssertions(assertions: readonly FileAssertion[]): FileAssertion[] {
+  const seen = new Set<string>();
+  return assertions.filter((assertion) => {
+    const key = `${assertion.id}\0${assertion.path}\0${Buffer.byteLength(assertion.expected_utf8)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function prefixContractPath(
+  value: string,
+  prefix: string,
+  allowDot: boolean,
+  field: string,
+): string {
+  if (prefix === '.') return normalizeRelative(value, allowDot, field);
+  const normalized = normalizeRelative(value, allowDot, field);
+  return normalizeRelative(
+    normalized === '.' ? prefix : `${prefix}/${normalized}`,
+    allowDot,
+    field,
+  );
+}
+
+/**
+ * Converts task paths from the MCP invocation cwd into repository-relative paths.
+ * Omitting this step preserves the repository-root semantics of persisted v1/v2 tasks.
+ */
+export function normalizeContractPaths(
+  contract: TaskContractV1,
+  context: ContractPathContext,
+): TaskContractV1 {
+  if (context.pathBase === 'repository') return contract;
+  let root: string;
+  let invocation: string;
+  try {
+    root = realpathSync.native(context.repositoryRoot);
+    invocation = realpathSync.native(context.invocationCwd);
+  } catch {
+    throw new BridgeError(
+      'invalid_request',
+      'Invocation cwd and repository root must resolve before path normalization',
+    );
+  }
+  const relative = path.relative(root, invocation).replaceAll('\\', '/');
+  if (relative === '..' || relative.startsWith('../') || path.isAbsolute(relative)) {
+    throw new BridgeError('invalid_request', 'Invocation cwd must be inside the repository root', {
+      invocationCwd: context.invocationCwd,
+      repositoryRoot: context.repositoryRoot,
+    });
+  }
+  const prefix = normalizeRepositoryCwd(relative || '.', 'invocation cwd');
+  return {
+    ...contract,
+    verified_context: contract.verified_context.map((item) => ({
+      ...item,
+      path: prefixContractPath(item.path, prefix, true, 'verified_context.path'),
+    })),
+    write_scope: contract.write_scope.map((item) =>
+      prefixContractPath(item, prefix, false, 'write_scope'),
+    ),
+    forbidden_scope: contract.forbidden_scope.map((item) =>
+      prefixContractPath(item, prefix, false, 'forbidden_scope'),
+    ),
+    verification: contract.verification.map((item) => ({
+      ...item,
+      cwd: prefixContractPath(item.cwd ?? '.', prefix, true, 'verification.cwd'),
+    })),
+    ...(contract.allowed_commands
+      ? {
+          allowed_commands: contract.allowed_commands.map((item) => ({
+            ...item,
+            cwd: prefixContractPath(item.cwd ?? '.', prefix, true, 'allowed_commands.cwd'),
+          })),
+        }
+      : {}),
+    ...(contract.file_assertions
+      ? {
+          file_assertions: contract.file_assertions.map((item) => ({
+            ...item,
+            path: prefixContractPath(item.path, prefix, false, 'file_assertions.path'),
           })),
         }
       : {}),
   };
+}
 
-  uniqueIds(contract.acceptance_criteria, 'acceptance_criteria');
-  uniqueIds(contract.verification, 'verification');
-  if (contract.allowed_commands) {
-    uniqueIds(contract.allowed_commands, 'allowed_commands');
-    uniqueIds(
-      [...contract.verification, ...contract.allowed_commands],
-      'verification and allowed_commands',
-    );
-  }
-  const automated = new Set(
-    contract.acceptance_criteria
-      .filter((item) => item.evidence === 'automated')
-      .map((item) => item.id),
-  );
-  const allCriteria = new Set(contract.acceptance_criteria.map((item) => item.id));
-  const proved = new Set<string>();
-  for (const verification of contract.verification) {
-    for (const criterion of verification.proves) {
-      if (!allCriteria.has(criterion)) {
-        throw new BridgeError(
-          'invalid_contract',
-          `Verification ${verification.id} proves unknown criterion ${criterion}`,
-        );
-      }
-      proved.add(criterion);
-    }
-  }
-  const missing = [...automated].filter((criterion) => !proved.has(criterion));
-  if (missing.length > 0) {
-    throw new BridgeError('invalid_contract', 'Automated acceptance criteria lack verification', {
-      missing,
-    });
-  }
-  return contract;
+export function parseTaskContractForInvocation(
+  input: unknown,
+  context: ContractPathContext,
+): TaskContractV1 {
+  return normalizeContractPaths(parseTaskContract(input), context);
 }
 
 function zodIssues(error: z.ZodError): ContractLintIssue[] {
@@ -206,13 +363,20 @@ function lintDuplicateIds(
   values: Array<{ id: string }>,
   field: string,
   issues: ContractLintIssue[],
+  identity?: (value: { id: string }) => string,
 ): void {
-  const seen = new Set<string>();
+  const seen = new Map<string, string>();
   values.forEach((value, index) => {
-    if (seen.has(value.id)) {
-      issues.push({ path: `${field}.${index}.id`, message: `Duplicate id: ${value.id}` });
+    const lintIndex = (value as { _lintIndex?: number })._lintIndex;
+    const prior = seen.get(value.id);
+    const current = identity?.(value) ?? JSON.stringify(index);
+    if (prior !== undefined && (!identity || prior !== current)) {
+      issues.push({
+        path: `${field}.${typeof lintIndex === 'number' ? String(lintIndex) : String(index)}.id`,
+        message: `${identity ? 'Conflicting' : 'Duplicate'} id: ${value.id}`,
+      });
     }
-    seen.add(value.id);
+    if (prior === undefined) seen.set(value.id, current);
   });
 }
 
@@ -235,53 +399,150 @@ function lintPath(
 /** Returns every schema and semantic contract problem that can be evaluated safely. */
 export function lintTaskContract(input: unknown): ContractLintIssue[] {
   const parsed = taskContractSchema.safeParse(input);
-  if (!parsed.success) return zodIssues(parsed.error);
+  if (parsed.success) return lintRawTaskContract(parsed.data);
 
-  const contract = parsed.data;
+  return [...zodIssues(parsed.error), ...lintRawTaskContract(input)];
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function idRecords(
+  value: unknown,
+): Array<Record<string, unknown> & { id: string; _lintIndex: number }> {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((candidate, index) => {
+    const item = objectRecord(candidate);
+    return typeof item?.id === 'string' ? [{ ...item, id: item.id, _lintIndex: index }] : [];
+  });
+}
+
+function lintCommandIdentity(
+  value: Record<string, unknown>,
+  defaultTimeout: number,
+  includeEvidence: boolean,
+): string {
+  if (
+    !Array.isArray(value.argv) ||
+    !value.argv.every((argument) => typeof argument === 'string') ||
+    (value.cwd !== undefined && typeof value.cwd !== 'string') ||
+    (value.timeout_seconds !== undefined && typeof value.timeout_seconds !== 'number')
+  ) {
+    return JSON.stringify(value);
+  }
+  let key: string;
+  try {
+    key = commandKey(
+      {
+        argv: value.argv,
+        ...(typeof value.cwd === 'string' ? { cwd: value.cwd } : {}),
+        ...(typeof value.timeout_seconds === 'number'
+          ? { timeout_seconds: value.timeout_seconds }
+          : {}),
+      },
+      defaultTimeout,
+    );
+  } catch {
+    key = JSON.stringify(value);
+  }
+  return includeEvidence ? `${key}\0${JSON.stringify(value.proves)}` : key;
+}
+
+function lintCrossCommandIdentity(value: Record<string, unknown>): string {
+  if (
+    !Array.isArray(value.argv) ||
+    !value.argv.every((argument) => typeof argument === 'string') ||
+    (value.cwd !== undefined && typeof value.cwd !== 'string') ||
+    (value.timeout_seconds !== undefined && typeof value.timeout_seconds !== 'number')
+  ) {
+    return JSON.stringify(value);
+  }
+  try {
+    return crossCommandKey({
+      argv: value.argv,
+      ...(typeof value.cwd === 'string' ? { cwd: value.cwd } : {}),
+      ...(typeof value.timeout_seconds === 'number'
+        ? { timeout_seconds: value.timeout_seconds }
+        : {}),
+    });
+  } catch {
+    return JSON.stringify(value);
+  }
+}
+
+function lintRawTaskContract(input: unknown): ContractLintIssue[] {
+  const contract = objectRecord(input);
+  if (!contract) return [];
   const issues: ContractLintIssue[] = [];
-  contract.verified_context.forEach((item, index) =>
-    lintPath(item.path, false, `verified_context.${index}.path`, issues),
-  );
-  contract.write_scope.forEach((item, index) =>
-    lintPath(item, false, `write_scope.${index}`, issues),
-  );
-  contract.forbidden_scope.forEach((item, index) =>
-    lintPath(item, false, `forbidden_scope.${index}`, issues),
-  );
-  contract.verification.forEach((item, index) =>
-    lintPath(item.cwd, true, `verification.${index}.cwd`, issues),
-  );
-  contract.allowed_commands?.forEach((item, index) =>
-    lintPath(item.cwd, true, `allowed_commands.${index}.cwd`, issues),
-  );
+  if (Array.isArray(contract.verified_context)) {
+    contract.verified_context.forEach((value, index) => {
+      const item = objectRecord(value);
+      if (typeof item?.path === 'string') {
+        lintPath(item.path, true, `verified_context.${index}.path`, issues);
+      }
+    });
+  }
+  for (const [field, allowDot] of [
+    ['write_scope', false],
+    ['forbidden_scope', false],
+  ] as const) {
+    if (!Array.isArray(contract[field])) continue;
+    contract[field].forEach((value, index) => {
+      if (typeof value === 'string') lintPath(value, allowDot, `${field}.${index}`, issues);
+    });
+  }
+  for (const field of ['verification', 'allowed_commands'] as const) {
+    if (!Array.isArray(contract[field])) continue;
+    contract[field].forEach((value, index) => {
+      const item = objectRecord(value);
+      if (item?.cwd === undefined || typeof item.cwd === 'string') {
+        lintPath(item?.cwd, true, `${field}.${index}.cwd`, issues);
+      }
+    });
+  }
 
-  lintDuplicateIds(contract.acceptance_criteria, 'acceptance_criteria', issues);
-  lintDuplicateIds(contract.verification, 'verification', issues);
-  if (contract.allowed_commands) {
-    lintDuplicateIds(contract.allowed_commands, 'allowed_commands', issues);
-    const verificationIds = new Set(contract.verification.map((command) => command.id));
-    contract.allowed_commands.forEach((command, index) => {
-      if (verificationIds.has(command.id)) {
+  const acceptance = idRecords(contract.acceptance_criteria);
+  const verification = idRecords(contract.verification);
+  const allowedCommands = idRecords(contract.allowed_commands);
+  const fileAssertions = idRecords(contract.file_assertions);
+  lintDuplicateIds(acceptance, 'acceptance_criteria', issues);
+  lintDuplicateIds(fileAssertions, 'file_assertions', issues);
+  lintDuplicateIds(verification, 'verification', issues, (value) =>
+    lintCommandIdentity(value, 600, true),
+  );
+  if (Array.isArray(contract.allowed_commands)) {
+    lintDuplicateIds(allowedCommands, 'allowed_commands', issues, (value) =>
+      lintCommandIdentity(value, 120, false),
+    );
+    const verificationById = new Map(
+      verification.map((command) => [command.id, lintCrossCommandIdentity(command)]),
+    );
+    allowedCommands.forEach((command) => {
+      const verification = verificationById.get(command.id);
+      if (verification !== undefined && verification !== lintCrossCommandIdentity(command)) {
         issues.push({
-          path: `allowed_commands.${index}.id`,
-          message: `Duplicate verification command id: ${command.id}`,
+          path: `allowed_commands.${command._lintIndex}.id`,
+          message: `Conflicting verification command id: ${command.id}`,
         });
       }
     });
   }
 
-  const criteria = new Set(contract.acceptance_criteria.map((item) => item.id));
+  const criteria = new Set(acceptance.map((item) => item.id));
   const automated = new Set(
-    contract.acceptance_criteria
-      .filter((item) => item.evidence === 'automated')
-      .map((item) => item.id),
+    acceptance.filter((item) => item.evidence === 'automated').map((item) => item.id),
   );
   const proved = new Set<string>();
-  contract.verification.forEach((verification, verificationIndex) => {
-    verification.proves.forEach((criterion, provesIndex) => {
+  verification.forEach((command) => {
+    if (!Array.isArray(command.proves)) return;
+    command.proves.forEach((criterion, provesIndex) => {
+      if (typeof criterion !== 'string') return;
       if (!criteria.has(criterion)) {
         issues.push({
-          path: `verification.${verificationIndex}.proves.${provesIndex}`,
+          path: `verification.${command._lintIndex}.proves.${provesIndex}`,
           message: `Unknown acceptance criterion: ${criterion}`,
         });
       } else {
@@ -289,11 +550,42 @@ export function lintTaskContract(input: unknown): ContractLintIssue[] {
       }
     });
   });
+  for (const assertion of fileAssertions) {
+    if (typeof assertion.path !== 'string') continue;
+    lintPath(assertion.path, false, `file_assertions.${assertion._lintIndex}.path`, issues);
+    if (typeof assertion.expected_utf8 !== 'string') continue;
+    const bytes = Buffer.byteLength(assertion.expected_utf8);
+    if (bytes > 64 * 1024) {
+      issues.push({
+        path: `file_assertions.${assertion._lintIndex}.expected_utf8`,
+        message: `expected_utf8 exceeds 64 KiB (${String(bytes)} bytes)`,
+      });
+    }
+    if (!Array.isArray(assertion.proves)) continue;
+    assertion.proves.forEach((criterion, provesIndex) => {
+      if (typeof criterion !== 'string') return;
+      if (!criteria.has(criterion)) {
+        issues.push({
+          path: `file_assertions.${assertion._lintIndex}.proves.${provesIndex}`,
+          message: `Unknown acceptance criterion: ${criterion}`,
+        });
+        return;
+      }
+      if (!automated.has(criterion)) {
+        issues.push({
+          path: `file_assertions.${assertion._lintIndex}.proves.${provesIndex}`,
+          message: `File assertions can only prove automated acceptance criteria: ${criterion}`,
+        });
+        return;
+      }
+      proved.add(criterion);
+    });
+  }
   for (const criterion of automated) {
     if (!proved.has(criterion)) {
       issues.push({
         path: 'verification',
-        message: `Automated acceptance criterion lacks verification: ${criterion}`,
+        message: `Automated acceptance criteria lack verification: ${criterion}`,
       });
     }
   }
@@ -426,6 +718,41 @@ export async function assertPathInsideWorktree(
       probe = parent;
     }
   }
+}
+
+export function renderFastPrompt(taskId: string, contract: TaskContractV1, hash: string): string {
+  const lines = [
+    `Edit task delegated by Codex supervisor (task ${taskId}, contract sha256 ${hash}).`,
+    '',
+    'Make exactly the contract-scoped file edits in this isolated worktree, then stop and report.',
+    'Do not commit, stage, push, merge, rebase, change branches, access credentials, enable',
+    'network, or expand scope. Do not create plans, todos, goal sessions, AutoResearch runs,',
+    'review or task skills, or subagents. Do not run acceptance or verification checks; Codex',
+    'will review, verify, stage, and create the only commit. Pause on any ambiguity listed by the',
+    'contract.',
+    '',
+    `Objective: ${contract.objective}`,
+    `User outcome: ${contract.user_outcome}`,
+    '',
+    'Verified context:',
+    ...contract.verified_context.map((item) => `- ${item.path}: ${item.reason}`),
+    '',
+    'Write scope:',
+    ...contract.write_scope.map((item) => `- ${item}`),
+    '',
+    'Forbidden scope (always wins):',
+    ...contract.forbidden_scope.map((item) => `- ${item}`),
+    '',
+    'Invariants:',
+    ...contract.invariants.map((item) => `- ${item}`),
+    '',
+    'Non-goals:',
+    ...contract.non_goals.map((item) => `- ${item}`),
+    '',
+    'Pause conditions:',
+    ...contract.pause_conditions.map((item) => `- ${item}`),
+  ];
+  return `${lines.join('\n')}\n`;
 }
 
 export function renderGoalPrompt(taskId: string, contract: TaskContractV1, hash: string): string {

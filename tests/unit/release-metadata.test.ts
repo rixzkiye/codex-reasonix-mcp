@@ -37,7 +37,7 @@ describe('release metadata', () => {
   });
 
   it.each([
-    ['0.2.0-rc.2', 'next'],
+    ['0.2.0-rc.3', 'next'],
     ['0.2.0', 'latest'],
   ])('maps %s to the %s npm dist-tag', async (version, distTag) => {
     await expect(releaseMetadata(version)).resolves.toEqual({

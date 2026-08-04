@@ -2,8 +2,19 @@
 
 `reasonix_delegate` validates the contract, normalizes repository-relative paths
 to POSIX form, stores canonical JSON, and binds its SHA-256 hash to the task ID.
-The optional `allowed_commands` addition is backward compatible: when absent,
-legacy canonical JSON and hashes remain byte-for-byte unchanged.
+The optional `allowed_commands` and `file_assertions` additions are backward
+compatible: when absent, legacy canonical JSON and hashes remain byte-for-byte
+unchanged.
+
+Execution profile fields such as `worker_lane`, `reasoning_effort`,
+`execution_timeout_seconds`, `wait_mode`, wait timeout, and `path_base` belong
+to the delegate request, not `TaskContractV1`, so they do not alter its
+canonical hash. New tasks default to `worker_lane: "fast"` (600-second
+deadline); `worker_lane: "deep"` tasks default to 3,600 seconds. Overrides
+stay within 60–14,400 seconds; a wait timeout does not cancel the worker.
+Contract paths default to interpretation relative to the invocation cwd and are
+normalized to repository-relative paths before hashing; `path_base:
+"repository"` retains legacy repository-root semantics.
 
 ```ts
 interface TaskContractV1 {
@@ -33,6 +44,12 @@ interface TaskContractV1 {
     cwd?: string; // default "."
     timeout_seconds?: number; // default 120, maximum 1800
   }>;
+  file_assertions?: Array<{
+    id: string;
+    path: string;
+    expected_utf8: string; // exact UTF-8 bytes including newline, <= 64 KiB
+    proves: string[];
+  }>;
   pause_conditions: string[];
 }
 ```
@@ -57,9 +74,13 @@ Contract rules:
 - argv is static, nonempty, bounded, and compared element-for-element without a
   shell. cwd must match after repository-relative normalization.
 - Every automated criterion must be named by at least one verification
-  command's `proves`; unknown criterion IDs are rejected.
-- Every review criterion must be approved explicitly and exclusively during
-  finalize.
+  command's `proves` or by a `file_assertions` entry; unknown criterion IDs are
+  rejected.
+- File assertions prove automated criteria only, compare the worktree file
+  byte-for-byte against `expected_utf8` (exact bytes, including any trailing
+  newline, at most 64 KiB), and record only hash plus byte length as evidence.
+- Every review criterion must be approved during finalize; automated criterion
+  ids may be included in approval but are ignored for it.
 - Repository, base commit, task ID, and contract hash are immutable. Expanded
   scope/commands require a new task contract.
 
@@ -68,8 +89,9 @@ Contract rules:
 Verification commands are automatically part of the allowed command set.
 `allowed_commands` permits additional exact test/build/format/package/project
 commands needed during implementation, but has no `proves` field and can never
-be automated acceptance evidence. Finalization derives automated evidence only
-from verification results.
+be automated acceptance evidence. Finalization derives automated evidence from
+verification results and from byte-exact `file_assertions` (hash/length only,
+never raw content).
 
 Hard policy runs before exact contract matching. Neither command list can
 authorize Git mutations or ref/history rewrites, remote/network access, credentials,

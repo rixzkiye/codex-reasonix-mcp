@@ -1,8 +1,21 @@
+import type { WireReasoningEffort, WorkerLane } from '../types.js';
+
+export interface RuntimeCallContext {
+  signal?: AbortSignal;
+  onProgress?: (message: string) => void | Promise<void>;
+}
+
 export interface DelegateInput {
   task_id: string;
   contract: unknown;
   base_ref?: string;
   resume?: boolean;
+  worker_lane?: WorkerLane;
+  reasoning_effort?: WireReasoningEffort;
+  execution_timeout_seconds?: number;
+  wait_mode?: 'review' | 'background';
+  wait_timeout_seconds?: number;
+  path_base?: 'cwd' | 'repository';
 }
 
 export type ControlInput =
@@ -22,6 +35,7 @@ export type ControlInput =
       review_summary: string;
       approved_review_criteria: string[];
       commit_message?: string;
+      wait_timeout_seconds?: number;
     }
   | { task_id: string; action: 'close' };
 
@@ -47,4 +61,5 @@ export interface InspectInput {
   wait_ms?: number;
   cursor?: string;
   max_bytes?: number;
+  wait_until?: 'change' | 'review_required' | 'interaction' | 'terminal';
 }

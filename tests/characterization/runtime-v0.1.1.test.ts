@@ -94,6 +94,7 @@ describe('v0.1.1 runtime characterization', () => {
       'contractHash',
       'createdAt',
       'eventSequence',
+      'executionProfile',
       'inspectedAfterPause',
       'interactions',
       'networkEnabled',
@@ -102,6 +103,7 @@ describe('v0.1.1 runtime characterization', () => {
       'repairActive',
       'repairRounds',
       'repository',
+      'reviewRevision',
       'risks',
       'schemaVersion',
       'status',
@@ -114,7 +116,13 @@ describe('v0.1.1 runtime characterization', () => {
       'worktree',
     ]);
     expect(task).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 4,
+      executionProfile: {
+        requestedReasoningEffort: 'medium',
+        effectiveReasoningEffort: 'medium',
+        executionTimeoutSeconds: 3_600,
+        workerLane: 'deep',
+      },
       taskId: 'shape-task',
       contract,
       repository: { id: 'repo-id', root: '/repo', commonDir: '/repo/.git', head: 'abc123' },
@@ -131,6 +139,7 @@ describe('v0.1.1 runtime characterization', () => {
       repairRounds: 0,
       repairActive: false,
       inspectedAfterPause: false,
+      reviewRevision: 0,
       summary: '',
       changedFiles: [],
       risks: [],

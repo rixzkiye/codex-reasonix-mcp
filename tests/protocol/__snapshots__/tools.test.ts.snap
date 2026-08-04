@@ -80,7 +80,44 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
               "maxItems": 256,
               "type": "array",
             },
+            "file_assertions": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "expected_utf8": {
+                    "maxLength": 65536,
+                    "type": "string",
+                  },
+                  "id": {
+                    "$ref": "#/properties/contract/properties/acceptance_criteria/items/properties/id",
+                  },
+                  "path": {
+                    "maxLength": 1024,
+                    "minLength": 1,
+                    "type": "string",
+                  },
+                  "proves": {
+                    "items": {
+                      "$ref": "#/properties/contract/properties/acceptance_criteria/items/properties/id",
+                    },
+                    "maxItems": 256,
+                    "minItems": 1,
+                    "type": "array",
+                  },
+                },
+                "required": [
+                  "id",
+                  "path",
+                  "expected_utf8",
+                  "proves",
+                ],
+                "type": "object",
+              },
+              "maxItems": 256,
+              "type": "array",
+            },
             "forbidden_scope": {
+              "default": [],
               "items": {
                 "maxLength": 1024,
                 "minLength": 1,
@@ -90,6 +127,7 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
               "type": "array",
             },
             "invariants": {
+              "default": [],
               "items": {
                 "$ref": "#/properties/contract/properties/objective",
               },
@@ -97,6 +135,7 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
               "type": "array",
             },
             "non_goals": {
+              "default": [],
               "items": {
                 "$ref": "#/properties/contract/properties/objective",
               },
@@ -109,6 +148,7 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
               "type": "string",
             },
             "pause_conditions": {
+              "default": [],
               "items": {
                 "$ref": "#/properties/contract/properties/objective",
               },
@@ -167,6 +207,7 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
               "type": "array",
             },
             "verified_context": {
+              "default": [],
               "items": {
                 "additionalProperties": false,
                 "properties": {
@@ -203,16 +244,35 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
             "schema_version",
             "objective",
             "user_outcome",
-            "verified_context",
             "write_scope",
-            "forbidden_scope",
-            "invariants",
-            "non_goals",
             "acceptance_criteria",
             "verification",
-            "pause_conditions",
           ],
           "type": "object",
+        },
+        "execution_timeout_seconds": {
+          "description": "Task execution deadline. New fast-lane tasks default to 600 seconds and deep-lane tasks to 3600 seconds; omitted resumes preserve the stored value. A wait timeout never cancels the worker.",
+          "maximum": 14400,
+          "minimum": 60,
+          "type": "integer",
+        },
+        "path_base": {
+          "description": "Defaults to cwd for new tasks; omitted legacy resumes preserve stored semantics.",
+          "enum": [
+            "cwd",
+            "repository",
+          ],
+          "type": "string",
+        },
+        "reasoning_effort": {
+          "description": "Reasoning effort; low is the lowest supported value for new tasks.",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "max",
+          ],
+          "type": "string",
         },
         "resume": {
           "default": true,
@@ -221,6 +281,28 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
         "task_id": {
           "maxLength": 64,
           "minLength": 1,
+          "type": "string",
+        },
+        "wait_mode": {
+          "default": "review",
+          "enum": [
+            "review",
+            "background",
+          ],
+          "type": "string",
+        },
+        "wait_timeout_seconds": {
+          "default": 600,
+          "maximum": 600,
+          "minimum": 0,
+          "type": "integer",
+        },
+        "worker_lane": {
+          "description": "Worker execution lane. fast (default) is a direct-edit Reasonix session without Goal/AutoResearch/subagents; deep is an explicit long-horizon Goal session. Omitted resumes preserve the stored lane.",
+          "enum": [
+            "fast",
+            "deep",
+          ],
           "type": "string",
         },
       },
@@ -235,9 +317,62 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
       "$schema": "http://json-schema.org/draft-07/schema#",
       "additionalProperties": false,
       "properties": {
+        "active_interaction": {
+          "additionalProperties": false,
+          "properties": {
+            "createdAt": {
+              "type": "string",
+            },
+            "id": {
+              "type": "string",
+            },
+            "kind": {
+              "enum": [
+                "permission",
+                "input",
+              ],
+              "type": "string",
+            },
+            "request": {
+              "additionalProperties": {},
+              "type": "object",
+            },
+            "resolvedAt": {
+              "type": "string",
+            },
+            "response": {
+              "additionalProperties": {},
+              "type": "object",
+            },
+            "status": {
+              "enum": [
+                "pending",
+                "resolved",
+                "cancelled",
+              ],
+              "type": "string",
+            },
+          },
+          "required": [
+            "id",
+            "kind",
+            "status",
+            "createdAt",
+            "request",
+          ],
+          "type": "object",
+        },
         "branch": {
           "minLength": 1,
           "type": "string",
+        },
+        "changed_files": {
+          "items": {
+            "maxLength": 1024,
+            "type": "string",
+          },
+          "maxItems": 256,
+          "type": "array",
         },
         "commit_hash": {
           "pattern": "^[0-9a-f]{40,64}$",
@@ -247,13 +382,49 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
           "pattern": "^[0-9a-f]{64}$",
           "type": "string",
         },
+        "diff": {
+          "maxLength": 12288,
+          "type": "string",
+        },
+        "diff_stat": {
+          "maxLength": 4096,
+          "type": "string",
+        },
+        "effective_reasoning_effort": {
+          "enum": [
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "max",
+          ],
+          "type": "string",
+        },
+        "execution_timeout_seconds": {
+          "maximum": 14400,
+          "minimum": 60,
+          "type": "integer",
+        },
         "inspect_required": {
           "type": "boolean",
+        },
+        "integration_command": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "type": "string",
         },
         "phase": {
           "type": "string",
         },
         "reason": {
+          "type": "string",
+        },
+        "reasonix_session_mode": {
+          "minLength": 1,
+          "type": "string",
+        },
+        "reasonix_work_mode": {
+          "minLength": 1,
           "type": "string",
         },
         "repair_rounds": {
@@ -264,12 +435,51 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
           "minLength": 1,
           "type": "string",
         },
+        "requested_reasoning_effort": {
+          "enum": [
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "max",
+          ],
+          "type": "string",
+        },
+        "required_review_criteria": {
+          "items": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string",
+          },
+          "maxItems": 1000,
+          "type": "array",
+        },
         "resume_required": {
           "type": "boolean",
+        },
+        "review_diff_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string",
+        },
+        "review_revision": {
+          "minimum": 0,
+          "type": "integer",
+        },
+        "risks": {
+          "items": {
+            "maxLength": 2048,
+            "type": "string",
+          },
+          "maxItems": 128,
+          "type": "array",
         },
         "session_id": {
           "minLength": 1,
           "type": "string",
+        },
+        "source_checkout_integrated": {
+          "const": false,
+          "type": "boolean",
         },
         "source_collision": {
           "additionalProperties": false,
@@ -340,13 +550,96 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
           ],
           "type": "string",
         },
+        "summary": {
+          "maxLength": 4096,
+          "type": "string",
+        },
         "task_id": {
           "maxLength": 64,
           "minLength": 1,
           "type": "string",
         },
+        "timed_out": {
+          "type": "boolean",
+        },
         "updated_at": {
           "minLength": 1,
+          "type": "string",
+        },
+        "usage": {
+          "additionalProperties": false,
+          "properties": {
+            "cacheHitRatio": {
+              "anyOf": [
+                {
+                  "maximum": 1,
+                  "minimum": 0,
+                  "type": "number",
+                },
+                {
+                  "type": "null",
+                },
+              ],
+            },
+            "cacheHitTokens": {
+              "minimum": 0,
+              "type": "number",
+            },
+            "cacheMissTokens": {
+              "minimum": 0,
+              "type": "number",
+            },
+            "completionTokens": {
+              "minimum": 0,
+              "type": "number",
+            },
+            "currency": {
+              "type": [
+                "string",
+                "null",
+              ],
+            },
+            "estimatedCost": {
+              "anyOf": [
+                {
+                  "minimum": 0,
+                  "type": "number",
+                },
+                {
+                  "type": "null",
+                },
+              ],
+            },
+            "promptTokens": {
+              "minimum": 0,
+              "type": "number",
+            },
+            "reasoningTokens": {
+              "minimum": 0,
+              "type": "number",
+            },
+            "usageSource": {
+              "type": "string",
+            },
+          },
+          "required": [
+            "promptTokens",
+            "completionTokens",
+            "reasoningTokens",
+            "cacheHitTokens",
+            "cacheMissTokens",
+            "cacheHitRatio",
+            "estimatedCost",
+            "currency",
+            "usageSource",
+          ],
+          "type": "object",
+        },
+        "worker_lane": {
+          "enum": [
+            "fast",
+            "deep",
+          ],
           "type": "string",
         },
         "worktree": {
@@ -362,6 +655,11 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
         "repository_id",
         "branch",
         "worktree",
+        "worker_lane",
+        "requested_reasoning_effort",
+        "effective_reasoning_effort",
+        "execution_timeout_seconds",
+        "source_checkout_integrated",
         "repair_rounds",
         "updated_at",
       ],
@@ -390,7 +688,7 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
           "type": "string",
         },
         "approved_review_criteria": {
-          "description": "Required when action is finalize; omit for other actions.",
+          "description": "Required when action is finalize; omit for other actions. Any valid acceptance id is accepted; automated ids are ignored for approval, but every review-evidence criterion must be present.",
           "items": {
             "maxLength": 64,
             "minLength": 1,
@@ -422,7 +720,7 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
         "message": {
           "description": "Required when action is steer; omit for other actions.",
           "maxLength": 20000,
-          "minLength": 1,
+          "minLength": 0,
           "type": "string",
         },
         "option_id": {
@@ -441,6 +739,12 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
           "maxLength": 64,
           "minLength": 1,
           "type": "string",
+        },
+        "wait_timeout_seconds": {
+          "description": "Optional wait timeout for action finalize; omit for other actions.",
+          "maximum": 600,
+          "minimum": 0,
+          "type": "integer",
         },
       },
       "required": [
@@ -466,10 +770,38 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
           "pattern": "^[0-9a-f]{64}$",
           "type": "string",
         },
+        "effective_reasoning_effort": {
+          "enum": [
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "max",
+          ],
+          "type": "string",
+        },
+        "execution_timeout_seconds": {
+          "maximum": 14400,
+          "minimum": 60,
+          "type": "integer",
+        },
+        "integration_command": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "type": "string",
+        },
         "phase": {
           "type": "string",
         },
         "reason": {
+          "type": "string",
+        },
+        "reasonix_session_mode": {
+          "minLength": 1,
+          "type": "string",
+        },
+        "reasonix_work_mode": {
+          "minLength": 1,
           "type": "string",
         },
         "repair_rounds": {
@@ -480,9 +812,27 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
           "minLength": 1,
           "type": "string",
         },
+        "requested_reasoning_effort": {
+          "enum": [
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "max",
+          ],
+          "type": "string",
+        },
+        "review_revision": {
+          "minimum": 0,
+          "type": "integer",
+        },
         "session_id": {
           "minLength": 1,
           "type": "string",
+        },
+        "source_checkout_integrated": {
+          "const": false,
+          "type": "boolean",
         },
         "source_collision": {
           "additionalProperties": false,
@@ -562,6 +912,13 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
           "minLength": 1,
           "type": "string",
         },
+        "worker_lane": {
+          "enum": [
+            "fast",
+            "deep",
+          ],
+          "type": "string",
+        },
         "worktree": {
           "minLength": 1,
           "type": "string",
@@ -575,6 +932,11 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
         "repository_id",
         "branch",
         "worktree",
+        "worker_lane",
+        "requested_reasoning_effort",
+        "effective_reasoning_effort",
+        "execution_timeout_seconds",
+        "source_checkout_integrated",
         "repair_rounds",
         "updated_at",
       ],
@@ -626,6 +988,16 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
           "minimum": 0,
           "type": "integer",
         },
+        "wait_until": {
+          "default": "change",
+          "enum": [
+            "change",
+            "review_required",
+            "interaction",
+            "terminal",
+          ],
+          "type": "string",
+        },
       },
       "required": [
         "task_id",
@@ -661,6 +1033,10 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
                           "review",
                         ],
                         "type": "string",
+                      },
+                      "outputBytes": {
+                        "minimum": 0,
+                        "type": "integer",
                       },
                       "sha256": {
                         "type": "string",
@@ -820,10 +1196,38 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
                       "pattern": "^[0-9a-f]{64}$",
                       "type": "string",
                     },
+                    "effective_reasoning_effort": {
+                      "enum": [
+                        "minimal",
+                        "low",
+                        "medium",
+                        "high",
+                        "max",
+                      ],
+                      "type": "string",
+                    },
+                    "execution_timeout_seconds": {
+                      "maximum": 14400,
+                      "minimum": 60,
+                      "type": "integer",
+                    },
+                    "integration_command": {
+                      "maxLength": 1024,
+                      "minLength": 1,
+                      "type": "string",
+                    },
                     "phase": {
                       "type": "string",
                     },
                     "reason": {
+                      "type": "string",
+                    },
+                    "reasonix_session_mode": {
+                      "minLength": 1,
+                      "type": "string",
+                    },
+                    "reasonix_work_mode": {
+                      "minLength": 1,
                       "type": "string",
                     },
                     "repair_rounds": {
@@ -834,9 +1238,27 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
                       "minLength": 1,
                       "type": "string",
                     },
+                    "requested_reasoning_effort": {
+                      "enum": [
+                        "minimal",
+                        "low",
+                        "medium",
+                        "high",
+                        "max",
+                      ],
+                      "type": "string",
+                    },
+                    "review_revision": {
+                      "minimum": 0,
+                      "type": "integer",
+                    },
                     "session_id": {
                       "minLength": 1,
                       "type": "string",
+                    },
+                    "source_checkout_integrated": {
+                      "const": false,
+                      "type": "boolean",
                     },
                     "source_collision": {
                       "additionalProperties": false,
@@ -914,6 +1336,13 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
                       "minLength": 1,
                       "type": "string",
                     },
+                    "worker_lane": {
+                      "enum": [
+                        "fast",
+                        "deep",
+                      ],
+                      "type": "string",
+                    },
                     "worktree": {
                       "minLength": 1,
                       "type": "string",
@@ -927,6 +1356,11 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
                     "repository_id",
                     "branch",
                     "worktree",
+                    "worker_lane",
+                    "requested_reasoning_effort",
+                    "effective_reasoning_effort",
+                    "execution_timeout_seconds",
+                    "source_checkout_integrated",
                     "repair_rounds",
                     "updated_at",
                   ],

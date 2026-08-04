@@ -31,6 +31,24 @@ describe('task lifecycle', () => {
     expect(task.repairRounds).toBe(2);
   });
 
+  it('returns pre-commit verification failures to review without terminalizing the task', () => {
+    const task = makeTaskRecordForTest(
+      'task',
+      parseTaskContract(contractFixture()),
+      { id: 'repo', root: '/repo', commonDir: '/repo/.git', head: 'abc' },
+      '/worktree',
+    );
+    transitionTask(task, 'running', 'goal');
+    transitionTask(task, 'review_required', 'review');
+    transitionTask(task, 'verifying', 'verification');
+    transitionTask(task, 'review_required', 'verification_repair_required', 'test failed');
+    expect(task).toMatchObject({
+      status: 'review_required',
+      phase: 'verification_repair_required',
+      reason: 'test failed',
+    });
+  });
+
   it('rejects native Windows while allowing WSL through the Linux platform path', () => {
     expect(() => assertSupportedPlatform('win32')).toThrow(/WSL/);
     expect(() => assertSupportedPlatform('linux')).not.toThrow();

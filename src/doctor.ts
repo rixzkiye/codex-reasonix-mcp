@@ -1,4 +1,4 @@
-import { access, chmod, mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
@@ -66,6 +66,7 @@ export interface DoctorOptions {
   deepTimeoutMs?: number;
   deepProviderTokenLimit?: number;
   deepDependencies?: DeepDoctorDependencies;
+  codexConfigPath?: string;
 }
 
 export interface DeepDoctorDependencies {
@@ -79,6 +80,9 @@ const supervisorFlags = ['--planner', '--sandbox-network', '--workspace-only', '
 const DEEP_TIMEOUT_MAX_MS = 10 * 60_000;
 export const DEFAULT_DEEP_DOCTOR_PROVIDER_TOKEN_LIMIT = 50_000;
 export const DEEP_DOCTOR_EVENT_TYPE_TAIL_LIMIT = 12;
+export const REQUIRED_CODEX_TOOL_TIMEOUT_SECONDS = 900;
+export const CODEX_TOOL_TIMEOUT_REMEDIATION =
+  '[mcp_servers.reasonix-worker]\ntool_timeout_sec = 900';
 
 class DeepDoctorTimeout extends Error {}
 
@@ -100,6 +104,52 @@ export function missingSupervisorFlags(helpText: string): string[] {
     const name = escapeRegExp(flag.replace(/^-+/, ''));
     return !new RegExp(`(?:^|\\s)-{1,2}${name}(?=\\s|=|$)`, 'm').test(helpText);
   });
+}
+
+function stripTomlComment(line: string): string {
+  let quoted = false;
+  let quote = '';
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index];
+    if ((character === '"' || character === "'") && line[index - 1] !== '\\') {
+      if (!quoted) {
+        quoted = true;
+        quote = character;
+      } else if (quote === character) {
+        quoted = false;
+      }
+    }
+    if (character === '#' && !quoted) return line.slice(0, index);
+  }
+  return line;
+}
+
+export function codexToolTimeoutCheck(configText: string | undefined): DoctorCheck {
+  let inReasonixWorker = false;
+  let configured: number | undefined;
+  for (const rawLine of (configText ?? '').split(/\r?\n/u)) {
+    const line = stripTomlComment(rawLine).trim();
+    const section = /^\[\s*(.+?)\s*\]$/u.exec(line);
+    if (section) {
+      const normalized = section[1]?.replace(/\s+/gu, '').replace(/["']/gu, '');
+      inReasonixWorker = normalized === 'mcp_servers.reasonix-worker';
+      continue;
+    }
+    if (!inReasonixWorker) continue;
+    const timeout = /^tool_timeout_sec\s*=\s*(\d+(?:\.\d+)?)\s*$/u.exec(line);
+    if (timeout) configured = Number(timeout[1]);
+  }
+
+  const ok = configured !== undefined && configured >= REQUIRED_CODEX_TOOL_TIMEOUT_SECONDS;
+  const current = configured === undefined ? 'unset' : `${String(configured)} seconds`;
+  return {
+    name: 'codex_tool_timeout',
+    ok,
+    detail: ok
+      ? `reasonix-worker tool_timeout_sec is ${current}`
+      : `reasonix-worker tool_timeout_sec is ${current}; set:\n${CODEX_TOOL_TIMEOUT_REMEDIATION}`,
+    required: true,
+  };
 }
 
 async function isWsl(): Promise<boolean> {
@@ -493,7 +543,15 @@ export async function runDeepDoctor(
       ],
       pause_conditions: ['Any immutable policy denial or scope expansion'],
     };
-    await runtime.delegate({ task_id: 'deep-doctor', contract }, sandboxMeta(fixture.repository));
+    await runtime.delegate(
+      {
+        task_id: 'deep-doctor',
+        contract,
+        worker_lane: 'deep',
+        wait_timeout_seconds: Math.max(1, Math.ceil(timeoutMs / 1_000)),
+      },
+      sandboxMeta(fixture.repository),
+    );
     providerRuns = 1;
     const review = await waitForTask(
       runtime,
@@ -655,6 +713,12 @@ export async function runDoctor(
         : `${process.platform}${wsl ? ' (WSL)' : ''}`,
     required: true,
   });
+
+  const codexConfigPath =
+    options.codexConfigPath ??
+    path.join(process.env.CODEX_HOME?.trim() || path.join(os.homedir(), '.codex'), 'config.toml');
+  const codexConfig = await readFile(codexConfigPath, 'utf8').catch(() => undefined);
+  checks.push(codexToolTimeoutCheck(codexConfig));
 
   const git = await runCommand({
     argv: ['git', '--version'],

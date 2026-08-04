@@ -2,24 +2,36 @@ import path from 'node:path';
 
 import type { BridgeConfig } from '../config.js';
 import { configFingerprint } from '../config.js';
-import { contractHash, parseTaskContract } from '../contracts.js';
+import { contractHash, parseTaskContractForInvocation, type TaskContractV1 } from '../contracts.js';
 import { BridgeError } from '../errors.js';
 import { transitionTask } from '../lifecycle.js';
+import { classifyStaticCommand } from '../policy.js';
 import {
   assertSourceClean,
   discoverRepository,
   resolveBaseCommit,
+  resolveGitIdentity,
   validateTaskId,
 } from '../repository.js';
 import { parseSandboxContext } from '../sandbox.js';
 import type { StateStore } from '../state.js';
-import { EMPTY_USAGE, TERMINAL_STATUSES, type TaskRecord } from '../types.js';
-import type { ControlInput, DelegateInput } from './api.js';
+import {
+  DEFAULT_EXECUTION_TIMEOUT_SECONDS,
+  DEFAULT_FAST_LANE_EXECUTION_TIMEOUT_SECONDS,
+  EMPTY_USAGE,
+  MAX_EXECUTION_TIMEOUT_SECONDS,
+  MIN_EXECUTION_TIMEOUT_SECONDS,
+  TASK_RECORD_SCHEMA_VERSION,
+  TERMINAL_STATUSES,
+  type TaskRecord,
+} from '../types.js';
+import type { ControlInput, DelegateInput, RuntimeCallContext } from './api.js';
 import { assertSupportedPlatform, type CollisionAccess } from './collision.js';
 import type { FinalizationAccess } from './finalization.js';
+import type { InspectionAccess } from './inspection.js';
 import type { PermissionAccess } from './permissions.js';
 import type { SessionAccess } from './session-supervision.js';
-import { now, taskView } from './shared.js';
+import { hasPendingInteraction, now, taskView, waitForTask, waitTimeoutMs } from './shared.js';
 
 export interface OperationDependencies {
   config: BridgeConfig;
@@ -34,32 +46,108 @@ export interface OperationDependencies {
     'beginProvision' | 'beginResume' | 'workerForTask' | 'cancelWorker' | 'closeWorker'
   >;
   finalization: FinalizationAccess;
+  inspection: Pick<InspectionAccess, 'reviewBundle'>;
 }
 
 export interface OperationAccess {
-  delegate(input: DelegateInput, requestMeta: unknown): Promise<Record<string, unknown>>;
-  control(input: ControlInput, requestMeta: unknown): Promise<Record<string, unknown>>;
+  delegate(
+    input: DelegateInput,
+    requestMeta: unknown,
+    context?: RuntimeCallContext,
+  ): Promise<Record<string, unknown>>;
+  control(
+    input: ControlInput,
+    requestMeta: unknown,
+    context?: RuntimeCallContext,
+  ): Promise<Record<string, unknown>>;
 }
 
 export class OperationController implements OperationAccess {
   constructor(private readonly dependencies: OperationDependencies) {}
 
-  async delegate(input: DelegateInput, requestMeta: unknown): Promise<Record<string, unknown>> {
+  async delegate(
+    input: DelegateInput,
+    requestMeta: unknown,
+    context: RuntimeCallContext = {},
+  ): Promise<Record<string, unknown>> {
     assertSupportedPlatform();
     const taskId = validateTaskId(input.task_id);
+    if (
+      input.execution_timeout_seconds !== undefined &&
+      (!Number.isInteger(input.execution_timeout_seconds) ||
+        input.execution_timeout_seconds < MIN_EXECUTION_TIMEOUT_SECONDS ||
+        input.execution_timeout_seconds > MAX_EXECUTION_TIMEOUT_SECONDS)
+    ) {
+      throw new BridgeError(
+        'invalid_request',
+        `execution_timeout_seconds must be an integer between ${String(MIN_EXECUTION_TIMEOUT_SECONDS)} and ${String(MAX_EXECUTION_TIMEOUT_SECONDS)}`,
+      );
+    }
     const sandbox = parseSandboxContext(requestMeta);
-    const contract = parseTaskContract(input.contract);
-    const hash = contractHash(contract);
     const repository = await discoverRepository(sandbox.cwd);
+    const exists = await this.dependencies.store.exists(taskId);
+    const existing = exists ? await this.dependencies.store.loadTask(taskId) : undefined;
+    const contract = existing
+      ? this.parseContractForExistingTask(
+          input,
+          sandbox.cwd,
+          repository.root,
+          existing.contractHash,
+        )
+      : parseTaskContractForInvocation(input.contract, {
+          invocationCwd: sandbox.cwd,
+          repositoryRoot: repository.root,
+          pathBase: input.path_base ?? 'cwd',
+        });
+    const hash = contractHash(contract);
 
-    if (await this.dependencies.store.exists(taskId)) {
-      const existing = await this.dependencies.store.loadTask(taskId);
+    if (existing) {
+      let resumeOrigin: Pick<TaskRecord, 'phase' | 'statusSequence'> | undefined;
       await this.dependencies.collision.assertExistingTask(
         existing,
         repository,
         hash,
         input.base_ref,
       );
+      if (
+        input.worker_lane !== undefined &&
+        input.worker_lane !== existing.executionProfile.workerLane
+      ) {
+        throw new BridgeError(
+          'task_conflict',
+          'Explicit worker_lane differs from the existing task execution profile',
+          {
+            requested: input.worker_lane,
+            stored: existing.executionProfile.workerLane,
+          },
+        );
+      }
+      if (
+        input.reasoning_effort !== undefined &&
+        input.reasoning_effort !== existing.executionProfile.requestedReasoningEffort
+      ) {
+        throw new BridgeError(
+          'task_conflict',
+          'Explicit reasoning_effort differs from the existing task execution profile',
+          {
+            requested: input.reasoning_effort,
+            stored: existing.executionProfile.requestedReasoningEffort,
+          },
+        );
+      }
+      if (
+        input.execution_timeout_seconds !== undefined &&
+        input.execution_timeout_seconds !== existing.executionProfile.executionTimeoutSeconds
+      ) {
+        throw new BridgeError(
+          'task_conflict',
+          'Explicit execution_timeout_seconds differs from the existing task execution profile',
+          {
+            requested: input.execution_timeout_seconds,
+            stored: existing.executionProfile.executionTimeoutSeconds,
+          },
+        );
+      }
       if (existing.status === 'paused' && input.resume !== false) {
         if (!existing.inspectedAfterPause) {
           return { ...taskView(existing), resume_required: true, inspect_required: true };
@@ -85,21 +173,47 @@ export class OperationController implements OperationAccess {
             },
           );
         }
+        await resolveGitIdentity(repository);
+        this.assertVerifierPolicyCompatible(existing.contract);
         await this.dependencies.collision.holdLease(repository, taskId);
         this.dependencies.sessions.beginResume(existing);
+        resumeOrigin = {
+          phase: existing.phase,
+          statusSequence: existing.statusSequence,
+        };
       }
-      return taskView(await this.dependencies.store.loadTask(taskId));
+      return await this.delegateResult(
+        await this.dependencies.store.loadTask(taskId),
+        input,
+        context,
+        resumeOrigin,
+      );
     }
 
     await assertSourceClean(repository);
+    await resolveGitIdentity(repository);
+    this.assertVerifierPolicyCompatible(contract);
     const baseRef = input.base_ref?.trim() || 'HEAD';
     const baseCommit = await resolveBaseCommit(repository, baseRef);
     await this.dependencies.collision.holdLease(repository, taskId);
     const createdAt = now();
     const worktree = path.join(this.dependencies.store.worktreesDir(), repository.id, taskId);
     const networkEnabled = this.dependencies.config.networkEnabled && sandbox.networkEnabled;
+    const workerLane = input.worker_lane ?? 'fast';
     const record: TaskRecord = {
-      schemaVersion: 2,
+      schemaVersion: TASK_RECORD_SCHEMA_VERSION,
+      executionProfile: {
+        requestedReasoningEffort:
+          input.reasoning_effort ?? this.dependencies.config.reasoningEffort,
+        effectiveReasoningEffort:
+          input.reasoning_effort ?? this.dependencies.config.reasoningEffort,
+        executionTimeoutSeconds:
+          input.execution_timeout_seconds ??
+          (workerLane === 'fast'
+            ? DEFAULT_FAST_LANE_EXECUTION_TIMEOUT_SECONDS
+            : DEFAULT_EXECUTION_TIMEOUT_SECONDS),
+        workerLane,
+      },
       taskId,
       contract,
       contractHash: hash,
@@ -130,6 +244,7 @@ export class OperationController implements OperationAccess {
       verification: [],
       acceptanceEvidence: [],
       usage: { ...EMPTY_USAGE },
+      reviewRevision: 0,
     };
     try {
       await this.dependencies.store.createTask(record);
@@ -138,10 +253,74 @@ export class OperationController implements OperationAccess {
       throw error;
     }
     this.dependencies.sessions.beginProvision(taskId);
-    return taskView(await this.dependencies.store.loadTask(taskId));
+    return await this.delegateResult(
+      await this.dependencies.store.loadTask(taskId),
+      input,
+      context,
+    );
   }
 
-  async control(input: ControlInput, requestMeta: unknown): Promise<Record<string, unknown>> {
+  private parseContractForExistingTask(
+    input: DelegateInput,
+    invocationCwd: string,
+    repositoryRoot: string,
+    existingHash: string,
+  ): TaskContractV1 {
+    const parse = (pathBase: 'cwd' | 'repository'): TaskContractV1 =>
+      parseTaskContractForInvocation(input.contract, {
+        invocationCwd,
+        repositoryRoot,
+        pathBase,
+      });
+    if (input.path_base !== undefined) return parse(input.path_base);
+
+    let firstError: unknown;
+    const candidates: TaskContractV1[] = [];
+    for (const pathBase of ['cwd', 'repository'] as const) {
+      try {
+        const candidate = parse(pathBase);
+        if (contractHash(candidate) === existingHash) return candidate;
+        candidates.push(candidate);
+      } catch (error) {
+        firstError ??= error;
+      }
+    }
+    if (candidates[0]) return candidates[0];
+    throw firstError;
+  }
+
+  private assertVerifierPolicyCompatible(contract: TaskContractV1): void {
+    const issues = contract.verification.flatMap((verification) => {
+      const decision = classifyStaticCommand(
+        {
+          argv: verification.argv,
+          cwd: verification.cwd ?? '.',
+        },
+        contract,
+      );
+      return decision.action === 'deny'
+        ? [
+            {
+              path: `verification.${verification.id}`,
+              message: `${decision.code}: ${decision.reason}`,
+            },
+          ]
+        : [];
+    });
+    if (issues.length > 0) {
+      throw new BridgeError(
+        'invalid_contract',
+        'Verification commands are incompatible with immutable command policy',
+        { issues },
+      );
+    }
+  }
+
+  async control(
+    input: ControlInput,
+    requestMeta: unknown,
+    context: RuntimeCallContext = {},
+  ): Promise<Record<string, unknown>> {
     assertSupportedPlatform();
     const taskId = validateTaskId(input.task_id);
     const task = await this.dependencies.store.loadTask(taskId);
@@ -156,7 +335,37 @@ export class OperationController implements OperationAccess {
     const sandbox = parseSandboxContext(requestMeta);
     const repository = await discoverRepository(sandbox.cwd);
     this.dependencies.collision.assertTaskRepository(task, repository);
-    return await this.dependencies.finalization.finalize(task, input, repository);
+    return await this.dependencies.finalization.finalize(task, input, repository, context);
+  }
+
+  private async delegateResult(
+    initial: TaskRecord,
+    input: DelegateInput,
+    context: RuntimeCallContext,
+    resumeOrigin?: Pick<TaskRecord, 'phase' | 'statusSequence'>,
+  ): Promise<Record<string, unknown>> {
+    if ((input.wait_mode ?? 'review') === 'background') return taskView(initial);
+    const waited = await waitForTask(
+      this.dependencies.store,
+      initial.taskId,
+      initial,
+      waitTimeoutMs(input.wait_timeout_seconds),
+      (task) =>
+        task.status === 'review_required' ||
+        (task.status === 'paused' &&
+          (resumeOrigin === undefined ||
+            task.phase !== resumeOrigin.phase ||
+            task.statusSequence !== resumeOrigin.statusSequence)) ||
+        TERMINAL_STATUSES.has(task.status) ||
+        hasPendingInteraction(task),
+      context,
+      'Reasonix is working; waiting for review or interaction',
+    );
+    const view = taskView(waited.task);
+    if (waited.task.status === 'review_required' || hasPendingInteraction(waited.task)) {
+      Object.assign(view, await this.dependencies.inspection.reviewBundle(waited.task.taskId));
+    }
+    return { ...view, timed_out: waited.timedOut };
   }
 
   private async steer(task: TaskRecord, message: string): Promise<Record<string, unknown>> {
