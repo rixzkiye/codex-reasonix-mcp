@@ -61,6 +61,13 @@ export const delegateInputSchema = z
       ),
     wait_mode: z.enum(['review', 'background']).optional().default('review'),
     wait_timeout_seconds: z.number().int().min(0).max(600).optional().default(600),
+    // Pause acknowledgment binding: resume must echo the pause revision and
+    // reason hash from the inspect output; stale acknowledgments are rejected.
+    pause_revision: z.number().int().min(0).optional(),
+    pause_reason_hash: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .optional(),
     path_base: z
       .enum(['cwd', 'repository'])
       .optional()
@@ -94,6 +101,11 @@ const controlDomainSchema = z.discriminatedUnion('action', [
       action: z.literal('finalize'),
       review_summary: z.string().trim().min(1).max(20_000),
       approved_review_criteria: z.array(z.string().min(1).max(64)).max(1_000),
+      // Snapshot binding: the approval must echo the reviewed snapshot the
+      // client actually inspected. Stale approvals (captured before a repair
+      // that re-captured the tree) are rejected by the bridge.
+      expected_review_revision: z.number().int().min(0),
+      expected_review_tree_hash: z.string().regex(/^[0-9a-f]{40}$/),
       commit_message: z.string().min(1).max(5_000).optional(),
       wait_timeout_seconds: z.number().int().min(0).max(600).optional().default(600),
     })
@@ -230,6 +242,15 @@ const taskViewSchema = z
     session_id: z.string().min(1).optional(),
     repair_rounds: z.number().int().min(0),
     review_revision: z.number().int().min(0).optional(),
+    review_tree_hash: z
+      .string()
+      .regex(/^[0-9a-f]{40}$/)
+      .optional(),
+    pause_revision: z.number().int().min(0).optional(),
+    pause_reason_hash: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .optional(),
     reasonix_work_mode: z.string().min(1).optional(),
     reasonix_session_mode: z.string().min(1).optional(),
     updated_at: z.string().min(1),
@@ -312,6 +333,10 @@ export const delegateOutputSchema = taskViewSchema.extend({
   active_interaction: interactionSchema.optional(),
   required_review_criteria: z.array(z.string().min(1).max(64)).max(1_000).optional(),
   review_revision: z.number().int().min(0).optional(),
+  review_tree_hash: z
+    .string()
+    .regex(/^[0-9a-f]{40}$/)
+    .optional(),
   review_diff_sha256: z
     .string()
     .regex(/^[0-9a-f]{64}$/)

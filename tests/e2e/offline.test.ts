@@ -9,7 +9,13 @@ import { loadConfig, type BridgeConfig } from '../../src/config.js';
 import type { ReasonixStatus } from '../../src/reasonix-status.js';
 import { BridgeRuntime } from '../../src/runtime.js';
 import type { TaskRecord } from '../../src/types.js';
-import { contractFixture, createGitRepository, sandboxMeta, waitUntil } from '../helpers.js';
+import {
+  approvalFor,
+  contractFixture,
+  createGitRepository,
+  sandboxMeta,
+  waitUntil,
+} from '../helpers.js';
 
 const runtimes: BridgeRuntime[] = [];
 
@@ -295,6 +301,7 @@ describe('offline Codex -> Reasonix -> Codex flow', () => {
       {
         task_id: 'offline-success',
         action: 'finalize',
+        ...approvalFor(review),
         review_summary: 'Scoped diff reviewed.',
         approved_review_criteria: [],
       },
@@ -352,6 +359,7 @@ describe('offline Codex -> Reasonix -> Codex flow', () => {
         {
           task_id: review.taskId,
           action: 'finalize',
+          ...approvalFor(review),
           review_summary: 'Diff reviewed.',
           approved_review_criteria: [],
         },
@@ -390,6 +398,7 @@ describe('offline Codex -> Reasonix -> Codex flow', () => {
         {
           task_id: review.taskId,
           action: 'finalize',
+          ...approvalFor(review),
           review_summary: 'Reviewed the whitespace regression fixture.',
           approved_review_criteria: [],
         },
@@ -423,6 +432,7 @@ describe('offline Codex -> Reasonix -> Codex flow', () => {
       {
         task_id: repairable.taskId,
         action: 'finalize',
+        ...approvalFor(repaired),
         review_summary: 'Reviewed the corrected worker diff.',
         approved_review_criteria: [],
       },
@@ -453,6 +463,7 @@ describe('offline Codex -> Reasonix -> Codex flow', () => {
         {
           task_id: review.taskId,
           action: 'finalize',
+          ...approvalFor(review),
           review_summary: 'Reviewed before exercising the commit transaction.',
           approved_review_criteria: [],
         },
@@ -507,6 +518,7 @@ describe('offline Codex -> Reasonix -> Codex flow', () => {
         {
           task_id: review.taskId,
           action: 'finalize',
+          ...approvalFor(review),
           review_summary: 'This must fail before bridge verification.',
           approved_review_criteria: [],
         },
@@ -539,6 +551,7 @@ describe('offline Codex -> Reasonix -> Codex flow', () => {
         {
           task_id: 'source-collision-finalize',
           action: 'finalize',
+          ...approvalFor(await runtime.store.loadTask('source-collision-finalize')),
           review_summary: 'Scoped diff reviewed.',
           approved_review_criteria: [],
         },
@@ -589,6 +602,7 @@ describe('offline Codex -> Reasonix -> Codex flow', () => {
         {
           task_id: 'source-moved-verification',
           action: 'finalize',
+          ...approvalFor(await runtime.store.loadTask('source-moved-verification')),
           review_summary: 'Scoped diff reviewed.',
           approved_review_criteria: [],
           wait_timeout_seconds: 0,
@@ -652,6 +666,7 @@ describe('offline Codex -> Reasonix -> Codex flow', () => {
           {
             task_id: taskId,
             action: 'finalize',
+            ...approvalFor(await runtime.store.loadTask(taskId)),
             review_summary: 'Scoped diff reviewed.',
             approved_review_criteria: [],
             wait_timeout_seconds: 0,
@@ -858,6 +873,7 @@ describe('offline Codex -> Reasonix -> Codex flow', () => {
         {
           task_id: 'cancel-verification',
           action: 'finalize',
+          ...approvalFor(await runtime.store.loadTask('cancel-verification')),
           review_summary: 'Reviewed before cancellation test.',
           approved_review_criteria: [],
           wait_timeout_seconds: 0,
@@ -917,6 +933,7 @@ describe('offline Codex -> Reasonix -> Codex flow', () => {
         {
           task_id: 'post-verify-size',
           action: 'finalize',
+          ...approvalFor(await runtime.store.loadTask('post-verify-size')),
           review_summary: 'Reviewed the small worker diff.',
           approved_review_criteria: [],
         },
@@ -962,6 +979,7 @@ describe('offline Codex -> Reasonix -> Codex flow', () => {
         {
           task_id: 'shutdown-finalize',
           action: 'finalize',
+          ...approvalFor(await runtime.store.loadTask('shutdown-finalize')),
           review_summary: 'Reviewed before shutdown.',
           approved_review_criteria: [],
           wait_timeout_seconds: 0,

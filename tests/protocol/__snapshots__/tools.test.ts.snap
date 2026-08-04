@@ -264,6 +264,14 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
           ],
           "type": "string",
         },
+        "pause_reason_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string",
+        },
+        "pause_revision": {
+          "minimum": 0,
+          "type": "integer",
+        },
         "reasoning_effort": {
           "description": "Reasoning effort; low is the lowest supported value for new tasks.",
           "enum": [
@@ -413,6 +421,14 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
           "minLength": 1,
           "type": "string",
         },
+        "pause_reason_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string",
+        },
+        "pause_revision": {
+          "minimum": 0,
+          "type": "integer",
+        },
         "phase": {
           "type": "string",
         },
@@ -464,6 +480,10 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
         "review_revision": {
           "minimum": 0,
           "type": "integer",
+        },
+        "review_tree_hash": {
+          "pattern": "^[0-9a-f]{40}$",
+          "type": "string",
         },
         "risks": {
           "items": {
@@ -790,6 +810,14 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
           "minLength": 1,
           "type": "string",
         },
+        "pause_reason_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string",
+        },
+        "pause_revision": {
+          "minimum": 0,
+          "type": "integer",
+        },
         "phase": {
           "type": "string",
         },
@@ -825,6 +853,10 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
         "review_revision": {
           "minimum": 0,
           "type": "integer",
+        },
+        "review_tree_hash": {
+          "pattern": "^[0-9a-f]{40}$",
+          "type": "string",
         },
         "session_id": {
           "minLength": 1,
@@ -1216,6 +1248,14 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
                       "minLength": 1,
                       "type": "string",
                     },
+                    "pause_reason_hash": {
+                      "pattern": "^[0-9a-f]{64}$",
+                      "type": "string",
+                    },
+                    "pause_revision": {
+                      "minimum": 0,
+                      "type": "integer",
+                    },
                     "phase": {
                       "type": "string",
                     },
@@ -1251,6 +1291,10 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
                     "review_revision": {
                       "minimum": 0,
                       "type": "integer",
+                    },
+                    "review_tree_hash": {
+                      "pattern": "^[0-9a-f]{40}$",
+                      "type": "string",
                     },
                     "session_id": {
                       "minLength": 1,

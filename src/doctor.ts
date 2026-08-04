@@ -574,12 +574,15 @@ export async function runDeepDoctor(
         items.some((event) => event.type === 'command_postflight_failed'),
     );
     usage = (await collectDeepEvidence(runtime, fixture, proofs, diagnostics, false)) ?? usage;
+    const doctorTask = await runtime.store.loadTask('deep-doctor');
     await runtime.control(
       {
         task_id: 'deep-doctor',
         action: 'finalize',
         review_summary: 'Deep doctor reviewed the bounded isolated diff.',
         approved_review_criteria: [],
+        expected_review_revision: doctorTask.reviewRevision ?? 0,
+        expected_review_tree_hash: doctorTask.reviewTreeHash ?? '',
       },
       sandboxMeta(fixture.repository),
     );

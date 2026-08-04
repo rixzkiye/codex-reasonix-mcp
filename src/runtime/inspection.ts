@@ -32,11 +32,6 @@ export class InspectionController implements InspectionAccess {
     const taskId = validateTaskId(input.task_id);
     let task = await this.dependencies.store.loadTask(taskId);
     const waitMs = Math.min(Math.max(input.wait_ms ?? 0, 0), 30_000);
-    if (task.status === 'paused' && !task.inspectedAfterPause) {
-      task = await this.dependencies.store.updateTask(taskId, (record) => {
-        record.inspectedAfterPause = true;
-      });
-    }
     if (waitMs > 0 && !input.cursor) {
       const waitUntil = input.wait_until ?? 'change';
       if (waitUntil === 'change') {

@@ -149,7 +149,25 @@ export class OperationController implements OperationAccess {
         );
       }
       if (existing.status === 'paused' && input.resume !== false) {
-        if (!existing.inspectedAfterPause) {
+        const pauseBound = (existing.pauseRevision ?? 0) > 0;
+        if (pauseBound) {
+          // Pause acknowledgment binding: resume must carry the current pause
+          // tokens (from the inspect output). Stale acknowledgments are
+          // rejected with the fresh tokens so the client can retry.
+          if (
+            input.pause_revision !== existing.pauseRevision ||
+            input.pause_reason_hash !== existing.pauseReasonHash
+          ) {
+            throw new BridgeError(
+              'invalid_request',
+              'Pause acknowledgment is stale: inspect the current pause and retry with its revision and reason hash',
+              {
+                pause_revision: existing.pauseRevision,
+                pause_reason_hash: existing.pauseReasonHash,
+              },
+            );
+          }
+        } else if (!existing.inspectedAfterPause) {
           return { ...taskView(existing), resume_required: true, inspect_required: true };
         }
         await this.dependencies.collision.guardTask(taskId, 'resume');
@@ -237,6 +255,8 @@ export class OperationController implements OperationAccess {
       repairRounds: 0,
       repairActive: false,
       inspectedAfterPause: false,
+      pauseRevision: 0,
+      pauseReasonHash: '',
       summary: '',
       changedFiles: [],
       risks: [],

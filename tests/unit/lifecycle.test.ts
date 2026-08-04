@@ -1,11 +1,30 @@
 import { describe, expect, it } from 'vitest';
 
 import { parseTaskContract } from '../../src/contracts.js';
-import { transitionTask } from '../../src/lifecycle.js';
+import { enterPaused, pauseReasonHash, transitionTask } from '../../src/lifecycle.js';
 import { assertSupportedPlatform, makeTaskRecordForTest } from '../../src/runtime.js';
 import { contractFixture } from '../helpers.js';
 
 describe('task lifecycle', () => {
+  it('bumps a monotonic pause revision and binds each pause to its reason hash', () => {
+    const task = makeTaskRecordForTest(
+      'task',
+      parseTaskContract(contractFixture()),
+      { id: 'repo', root: '/repo', commonDir: '/repo/.git', head: 'abc' },
+      '/worktree',
+    );
+    enterPaused(task, 'source_collision', 'source changed');
+    expect(task.status).toBe('paused');
+    expect(task.pauseRevision).toBe(1);
+    expect(task.pauseReasonHash).toBe(pauseReasonHash('source changed'));
+    expect(task.inspectedAfterPause).toBe(false);
+
+    transitionTask(task, 'running', 'goal');
+    enterPaused(task, 'worker_crashed');
+    expect(task.pauseRevision).toBe(2);
+    expect(task.pauseReasonHash).toBe(pauseReasonHash(undefined));
+    expect(task.reason).toBeUndefined();
+  });
   it('accepts the official happy path and rejects terminal resurrection', () => {
     const task = makeTaskRecordForTest(
       'task',
