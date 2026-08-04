@@ -4,6 +4,7 @@ import process from 'node:process';
 import { Readable, Writable } from 'node:stream';
 
 import * as acp from '@agentclientprotocol/sdk';
+import picomatch from 'picomatch';
 import type {
   InitializeResponse,
   NewSessionResponse,
@@ -124,10 +125,76 @@ export function desiredEffort(
   return { configId: selector.id, value: requested };
 }
 
-function inheritedReasonixEnvironment(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env };
-  delete env.NODE_OPTIONS;
-  delete env.NPM_CONFIG_USERCONFIG;
+// Environment baseline passed to the Reasonix ACP child: system paths,
+// locale, temp, CA configuration, and the Codex home. Provider credentials
+// are deliberately NOT part of the baseline.
+const REASONIX_SYSTEM_ENV_KEYS = [
+  'PATH',
+  'HOME',
+  'CODEX_HOME',
+  'LANG',
+  'LANGUAGE',
+  'LC_ALL',
+  'LC_CTYPE',
+  'TERM',
+  'TMPDIR',
+  'TMP',
+  'TEMP',
+  'XDG_CONFIG_HOME',
+  'XDG_STATE_HOME',
+  'XDG_CACHE_HOME',
+  'XDG_DATA_HOME',
+  'SSL_CERT_FILE',
+  'REQUESTS_CA_BUNDLE',
+  'CURL_CA_BUNDLE',
+  'NODE_EXTRA_CA_CERTS',
+] as const;
+
+// Injection vectors that must never reach the worker, even if explicitly
+// allowlisted: Node/binary preloaders, shell startup files, and Git helper
+// drivers that the worker's read-only git commands could execute.
+const DENIED_ENV_KEYS = new Set([
+  'NODE_OPTIONS',
+  'LD_PRELOAD',
+  'LD_LIBRARY_PATH',
+  'BASH_ENV',
+  'ENV',
+  'BASHOPTS',
+  'GIT_EXTERNAL_DIFF',
+  'GIT_PAGER',
+  'PAGER',
+  'NPM_CONFIG_USERCONFIG',
+]);
+const DENIED_ENV_PREFIXES = ['DYLD_', 'NPM_CONFIG_', 'npm_config_'];
+
+/**
+ * Build the environment handed to the Reasonix ACP child from an explicit
+ * baseline instead of inheriting the full host environment:
+ * - system baseline (paths, locale, temp, CA);
+ * - REASONIX_* pass-through;
+ * - provider credentials and anything else ONLY via config.envAllowlist
+ *   (CODEX_REASONIX_ENV_ALLOWLIST, comma-separated globs);
+ * - hard-deny list wins over the allowlist.
+ */
+export function buildReasonixEnvironment(config: BridgeConfig): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const key of REASONIX_SYSTEM_ENV_KEYS) {
+    const value = process.env[key];
+    if (value !== undefined) env[key] = value;
+  }
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value === undefined) continue;
+    if (DENIED_ENV_KEYS.has(key) || DENIED_ENV_PREFIXES.some((prefix) => key.startsWith(prefix))) {
+      continue;
+    }
+    if (key.startsWith('REASONIX_') || key.startsWith('LC_')) {
+      env[key] = value;
+      continue;
+    }
+    if (config.envAllowlist.some((pattern) => picomatch(pattern, { dot: true })(key))) {
+      env[key] = value;
+    }
+  }
   return env;
 }
 
@@ -248,7 +315,7 @@ export class ReasonixProcess {
     try {
       child = spawn(config.reasonixCommand, args, {
         cwd: repository.root,
-        env: inheritedReasonixEnvironment(),
+        env: buildReasonixEnvironment(config),
         shell: false,
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,

@@ -328,6 +328,34 @@ describe('offline Codex -> Reasonix -> Codex flow', () => {
     expect(controlCalls.mock.calls.some(([call]) => call.action === 'steer')).toBe(false);
   });
 
+  it('hands the worker an allowlisted environment instead of the full host env', async () => {
+    const repository = await createGitRepository();
+    const runtime = await runtimeFixture({
+      reasonixArgs: [path.resolve('tests/fixtures/fake-reasonix.ts'), '--fake-mode=env-dump'],
+      envAllowlist: ['MY_ALLOWED_KEY'],
+    });
+    vi.stubEnv('MY_ALLOWED_KEY', 'allowed-value');
+    vi.stubEnv('MY_AMBIENT_SECRET', 'must-not-leak');
+    try {
+      const delegated = await runtime.delegate(
+        { task_id: 'env-allowlist', contract: contractFixture(), worker_lane: 'deep' },
+        sandboxMeta(repository),
+      );
+      expect(delegated.state).toBe('review_required');
+      const task = await runtime.store.loadTask('env-allowlist');
+      const dumpPath = path.join(task.worktree, '.reasonix', 'env-dump.json');
+      const dump = JSON.parse(await readFile(dumpPath, 'utf8')) as Record<string, string>;
+      expect(dump.MY_ALLOWED_KEY).toBe('allowed-value');
+      expect(dump.MY_AMBIENT_SECRET).toBeUndefined();
+      // system baseline reaches the worker
+      expect(dump.HOME).toBeDefined();
+      expect(dump.PATH).toBeDefined();
+      expect(dump.LANG).toBeDefined();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('leaves both index and history untouched when verification fails', async () => {
     const repository = await createGitRepository();
     const runtime = await runtimeFixture();

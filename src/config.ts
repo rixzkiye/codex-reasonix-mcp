@@ -19,6 +19,8 @@ export interface BridgeConfig {
   maxBinaryBytes: number;
   leaseStaleMs: number;
   leaseHeartbeatMs: number;
+  /** Glob patterns (CODEX_REASONIX_ENV_ALLOWLIST) for env vars passed to the Reasonix child beyond the system baseline. */
+  envAllowlist: string[];
 }
 
 function parseReasoningEffort(value: string | undefined): ReasoningEffort {
@@ -67,6 +69,13 @@ function parseScanner(value: string | undefined): readonly [string, ...string[]]
   return parsed as [string, ...string[]];
 }
 
+function parseEnvAllowlist(value: string | undefined): string[] {
+  return (value ?? '')
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+}
+
 export function loadConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
   return {
     stateDir: defaultStateDir(),
@@ -81,6 +90,7 @@ export function loadConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig 
     maxBinaryBytes: 10 * 1024 * 1024,
     leaseStaleMs: 30_000,
     leaseHeartbeatMs: 5_000,
+    envAllowlist: parseEnvAllowlist(process.env.CODEX_REASONIX_ENV_ALLOWLIST),
     ...overrides,
   };
 }
@@ -92,6 +102,7 @@ export function configFingerprint(config: BridgeConfig): string {
     model: config.model,
     profile: config.profile,
     network: config.networkEnabled,
+    envAllowlist: config.envAllowlist,
   });
   return createHash('sha256').update(stable).digest('hex').slice(0, 24);
 }
