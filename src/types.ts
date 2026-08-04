@@ -145,6 +145,10 @@ interface TaskRecordFields {
   repairRounds: number;
   repairActive: boolean;
   inspectedAfterPause: boolean;
+  /** Monotonic counter bumped on every pause entry; 0 = never paused. */
+  pauseRevision: number;
+  /** sha256 of the canonical pause reason for the current pause. */
+  pauseReasonHash: string;
   summary: string;
   finalMessage?: string;
   changedFiles: string[];

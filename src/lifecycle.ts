@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { BridgeError } from './errors.js';
 import { TERMINAL_STATUSES, type TaskRecord, type TaskStatus } from './types.js';
 
@@ -54,4 +56,26 @@ export function transitionTask(
 
 export function canTransition(from: TaskStatus, to: TaskStatus): boolean {
   return from === to || TRANSITIONS[from].has(to);
+}
+
+/**
+ * Canonical hash of a pause reason. Clients echo it back when resuming so a
+ * stale pause acknowledgment can never be mistaken for a current one.
+ */
+export function pauseReasonHash(reason: string | undefined): string {
+  return createHash('sha256')
+    .update(reason ?? 'unspecified')
+    .digest('hex');
+}
+
+/**
+ * Enter the paused state, bumping the monotonic pause revision and binding
+ * the pause to a hash of its reason. Every pause entry point must use this
+ * helper so resume can reject stale acknowledgments.
+ */
+export function enterPaused(record: TaskRecord, phase: string, reason?: string): void {
+  transitionTask(record, 'paused', phase, reason);
+  record.pauseRevision = (record.pauseRevision ?? 0) + 1;
+  record.pauseReasonHash = pauseReasonHash(reason);
+  record.inspectedAfterPause = false;
 }

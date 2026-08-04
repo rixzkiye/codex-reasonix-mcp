@@ -2,7 +2,7 @@ import type { BridgeConfig } from '../config.js';
 import { assertLaneCompatible } from '../acp.js';
 import { BridgeError, asBridgeError } from '../errors.js';
 import { fileAssertionEvidenceForCriterion, verifyFileAssertions } from '../file-assertions.js';
-import { transitionTask } from '../lifecycle.js';
+import { enterPaused, transitionTask } from '../lifecycle.js';
 import { git } from '../repository.js';
 import {
   assertChangedFilesInScope,
@@ -28,6 +28,38 @@ import type { RuntimeCallContext } from './api.js';
 import type { CollisionAccess } from './collision.js';
 import type { SessionAccess } from './session-supervision.js';
 import { taskView, waitForTask, waitTimeoutMs } from './shared.js';
+
+/**
+ * Snapshot-bound approval check: the finalize approval must echo the exact
+ * reviewed snapshot (revision + tree hash) the client inspected. Enforced at
+ * every finalize checkpoint so an approval captured before a repair that
+ * re-captured the tree is always rejected.
+ */
+function assertApprovalCurrent(
+  task: TaskRecord,
+  expectedReviewRevision: number,
+  expectedReviewTreeHash: string,
+  checkpoint: string,
+): void {
+  const currentHash = task.reviewTreeHash ?? '';
+  if (expectedReviewRevision !== task.reviewRevision || expectedReviewTreeHash !== currentHash) {
+    throw new BridgeError(
+      'invalid_request',
+      'Finalize approval is stale: the reviewed snapshot changed since approval; re-inspect and approve the current snapshot',
+      {
+        checkpoint,
+        expected: {
+          review_revision: expectedReviewRevision,
+          review_tree_hash: expectedReviewTreeHash,
+        },
+        current: {
+          review_revision: task.reviewRevision,
+          review_tree_hash: currentHash,
+        },
+      },
+    );
+  }
+}
 
 export interface FinalizationDependencies {
   config: BridgeConfig;
@@ -97,6 +129,12 @@ export class FinalizationController implements FinalizationAccess {
     const message = input.commit_message
       ? validateCommitMessage(input.commit_message)
       : defaultCommitMessage(task.taskId, task.contract.objective);
+    assertApprovalCurrent(
+      task,
+      input.expected_review_revision,
+      input.expected_review_tree_hash,
+      'finalize_start',
+    );
     const identity = await resolveGitIdentity(repository);
     await this.dependencies.collision.holdLease(repository, task.taskId);
     await this.dependencies.store.recordEvent(task.taskId, 'finalization_started', {}, (record) => {
@@ -112,6 +150,8 @@ export class FinalizationController implements FinalizationAccess {
       message,
       identity,
       controller.signal,
+      input.expected_review_revision,
+      input.expected_review_tree_hash,
     )
       .catch(async (error: unknown) => {
         const bridgeError = asBridgeError(error);
@@ -140,20 +180,20 @@ export class FinalizationController implements FinalizationAccess {
           { code: bridgeError.code, message: bridgeError.message, details: bridgeError.details },
           (record) => {
             if (record.status === 'verifying') {
-              transitionTask(
-                record,
-                commitOrRefFailure
-                  ? 'commit_failed'
-                  : indexRecoveryFailed
-                    ? 'paused'
-                    : 'review_required',
-                commitOrRefFailure
-                  ? 'commit_failed'
-                  : indexRecoveryFailed
-                    ? 'index_recovery_failed'
-                    : 'verification_repair_required',
-                `${bridgeError.code}: ${bridgeError.message}`,
-              );
+              if (indexRecoveryFailed) {
+                enterPaused(
+                  record,
+                  'index_recovery_failed',
+                  `${bridgeError.code}: ${bridgeError.message}`,
+                );
+              } else {
+                transitionTask(
+                  record,
+                  commitOrRefFailure ? 'commit_failed' : 'review_required',
+                  commitOrRefFailure ? 'commit_failed' : 'verification_repair_required',
+                  `${bridgeError.code}: ${bridgeError.message}`,
+                );
+              }
               if (repairableTree !== undefined && repairableTree !== record.reviewTreeHash) {
                 record.reviewTreeHash = repairableTree;
                 record.reviewRevision = (record.reviewRevision ?? 0) + 1;
@@ -223,6 +263,8 @@ export class FinalizationController implements FinalizationAccess {
     commitMessage: string,
     identity: Awaited<ReturnType<typeof resolveGitIdentity>>,
     signal: AbortSignal,
+    expectedReviewRevision: number,
+    expectedReviewTreeHash: string,
   ): Promise<void> {
     const assertActive = async (): Promise<void> => {
       if (signal.aborted) throw new BridgeError('invalid_state', 'Finalization was cancelled');
@@ -297,6 +339,12 @@ export class FinalizationController implements FinalizationAccess {
         },
       );
     }
+    assertApprovalCurrent(
+      task,
+      expectedReviewRevision,
+      expectedReviewTreeHash,
+      'after_verification',
+    );
     const assertionEvidence = await verifyFileAssertions(task.worktree, task.contract);
     files = verifiedFiles;
     await this.dependencies.store.recordEvent(taskId, 'verification_postflight_passed', {
@@ -358,6 +406,7 @@ export class FinalizationController implements FinalizationAccess {
     await assertActive();
     await this.dependencies.collision.guardTask(taskId, 'before_staging');
     task = await this.dependencies.store.loadTask(taskId);
+    assertApprovalCurrent(task, expectedReviewRevision, expectedReviewTreeHash, 'before_staging');
     let stagedByBridge = false;
     let commitCreated = false;
     let createdCommitHash: string | undefined;

@@ -15,6 +15,7 @@ import path from 'node:path';
 import { canonicalContractJson, contractHash, parseTaskContract } from './contracts.js';
 import type { TaskContractV1 } from './contracts.js';
 import { BridgeError } from './errors.js';
+import { enterPaused } from './lifecycle.js';
 import {
   ACTIVE_HOOK_SENTINEL_SCHEMA_VERSION,
   activeHookSentinelPath as hookSentinelPath,
@@ -421,6 +422,8 @@ function parseTaskRecordFields(
     repairRounds: requireInteger(state.repairRounds, 'repairRounds'),
     repairActive: requireBoolean(state.repairActive, 'repairActive'),
     inspectedAfterPause: requireBoolean(state.inspectedAfterPause, 'inspectedAfterPause'),
+    pauseRevision: requireInteger(state.pauseRevision ?? 0, 'pauseRevision'),
+    pauseReasonHash: requireString(state.pauseReasonHash ?? '', 'pauseReasonHash'),
     summary: requireString(state.summary, 'summary'),
     changedFiles: requireStringArray(state.changedFiles, 'changedFiles'),
     risks: requireStringArray(state.risks, 'risks'),
@@ -807,10 +810,11 @@ export class StateStore {
           'restart_recovery',
           { previousStatus: record.status },
           (task) => {
-            task.status = 'paused';
-            task.phase = 'restart_recovery';
-            task.reason = 'Bridge restart detected; inspect before explicit resume';
-            task.inspectedAfterPause = false;
+            enterPaused(
+              task,
+              'restart_recovery',
+              'Bridge restart detected; inspect before explicit resume',
+            );
             for (const interaction of task.interactions) {
               if (interaction.status === 'pending') interaction.status = 'cancelled';
             }
