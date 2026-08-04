@@ -128,7 +128,9 @@ from `codex/sandbox-state-meta`; no model-provided repository path is accepted.
 
 The normal success path is exactly two long-running calls: one delegate with
 the default `wait_mode: "review"`, then one `finalize` that waits for a terminal
-result and returns the worker commit hash. New tasks run on the `worker_lane:
+result and returns the worker commit hash. Finalize echoes the reviewed
+snapshot by mapping `review_revision` to `expected_review_revision` and
+`review_tree_hash` to `expected_review_tree_hash`. New tasks run on the `worker_lane:
 "fast"` (direct edits in Reasonix economy + normal mode, no Goal/AutoResearch/
 subagents, 600-second default deadline); choose `worker_lane: "deep"` only for
 explicitly long-horizon Delivery + Goal work (3,600-second default).
@@ -143,6 +145,11 @@ again without changing its stored execution profile. There is no hard worker
 token ceiling. `path_base` defaults to the
 invocation `cwd`; use `repository` only for legacy repository-root path
 semantics. Inspect/steer are recovery tools, not happy-path polling steps.
+
+If finalization fails, keep the retained task at review, inspect or repair it
+there, and finalize again using the newly reviewed snapshot. Do not manually
+copy the diff into the source checkout and do not close the task as a recovery
+shortcut.
 
 Completion creates a commit on the retained worker branch. It does not
 integrate the caller's checkout: after reviewing the returned hash, Codex may

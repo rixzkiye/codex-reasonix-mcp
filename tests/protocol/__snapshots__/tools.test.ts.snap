@@ -118,6 +118,7 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
             },
             "forbidden_scope": {
               "default": [],
+              "description": "Optional sensitive carve-outs inside broader write scopes; never use a catch-all pattern that matches a concrete write_scope target.",
               "items": {
                 "maxLength": 1024,
                 "minLength": 1,
@@ -230,6 +231,7 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
               "type": "array",
             },
             "write_scope": {
+              "description": "Exclusive repository-relative write allowlist; every path not listed is already denied.",
               "items": {
                 "maxLength": 1024,
                 "minLength": 1,
@@ -729,6 +731,16 @@ exports[`stable MCP surface > advertises codex sandbox metadata and exactly thre
             "allow",
             "deny",
           ],
+          "type": "string",
+        },
+        "expected_review_revision": {
+          "description": "Required when action is finalize: copy review_revision from the reviewed task view. Omit for other actions.",
+          "minimum": 0,
+          "type": "integer",
+        },
+        "expected_review_tree_hash": {
+          "description": "Required when action is finalize: copy review_tree_hash from the reviewed task view. Omit for other actions.",
+          "pattern": "^[0-9a-f]{40}$",
           "type": "string",
         },
         "interaction_id": {

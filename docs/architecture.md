@@ -131,7 +131,9 @@ trust. It is an early guardrail only—the core scanner remains authoritative.
 Finalization requires an idle `review_required` task. Approval accepts any
 valid acceptance id: automated ids are ignored for approval, but every
 review-evidence criterion must be approved (missing or foreign ids are rejected
-with the required list). It guards source ownership, recomputes worker changes,
+with the required list). The request binds the reviewed task view by mapping
+`review_revision` to `expected_review_revision` and `review_tree_hash` to
+`expected_review_tree_hash`. It guards source ownership, recomputes worker changes,
 rejects out-of-scope paths/submodules/symlink escapes, enforces size/secret
 checks, runs every verification command, verifies byte-exact `file_assertions`,
 then repeats collision and content checks.
@@ -144,7 +146,9 @@ staging — no `git add -N` is ever used. Verification-time or post-review tree
 mutation is rejected as ownership ambiguity; failures before commit return to
 repairable `review_required`, where the canonical snapshot is re-captured so a
 hand-repaired worktree stays finalizable, and only commit/ref failures use
-`commit_failed`.
+`commit_failed`. Recovery keeps the task at review for inspect/repair and a new
+snapshot-bound finalize; it never copies the diff into the source checkout or
+closes the task as a substitute for finalization.
 
 Automated criteria are approved by verification results or by file-assertion
 hash/length evidence. The bridge stages an explicit path list, compares

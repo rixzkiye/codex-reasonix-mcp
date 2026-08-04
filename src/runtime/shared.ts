@@ -94,7 +94,18 @@ export async function waitForTask(
 }
 
 export function statusToUsage(status: ReasonixStatus): TaskRecord['usage'] {
-  return { ...status.usage.cumulative };
+  const usage = status.usage.cumulative;
+  return {
+    promptTokens: usage.promptTokens,
+    completionTokens: usage.completionTokens,
+    reasoningTokens: usage.reasoningTokens,
+    cacheHitTokens: usage.cacheHitTokens,
+    cacheMissTokens: usage.cacheMissTokens,
+    cacheHitRatio: usage.cacheHitRatio,
+    estimatedCost: usage.estimatedCost,
+    currency: usage.currency,
+    usageSource: usage.usageSource,
+  };
 }
 
 export function makeTaskRecordForTest(

@@ -363,6 +363,37 @@ describe('offline Codex -> Reasonix -> Codex flow', () => {
     }
   });
 
+  it('accepts Reasonix >= 1.19.4 usage metadata without leaking it to task state or views', async () => {
+    const repository = await createGitRepository();
+    const runtime = await runtimeFixture({
+      reasonixArgs: [
+        path.resolve('tests/fixtures/fake-reasonix.ts'),
+        '--fake-mode=status-estimated',
+      ],
+    });
+    const delegated = await runtime.delegate(
+      { task_id: 'status-estimated', contract: contractFixture(), worker_lane: 'deep' },
+      sandboxMeta(repository),
+    );
+    expect(delegated).toMatchObject({ state: 'review_required' });
+    expect(delegated.usage).not.toHaveProperty('estimated');
+
+    const review = await runtime.store.loadTask('status-estimated');
+    expect(review.usage).not.toHaveProperty('estimated');
+    const completed = await runtime.control(
+      {
+        task_id: 'status-estimated',
+        action: 'finalize',
+        ...approvalFor(review),
+        review_summary: 'Scoped diff reviewed.',
+        approved_review_criteria: [],
+      },
+      sandboxMeta(repository),
+    );
+    expect(completed.state).toBe('completed');
+    expect(completed.commit_hash).toMatch(/^[0-9a-f]{40}$/);
+  });
+
   it('leaves both index and history untouched when verification fails', async () => {
     const repository = await createGitRepository();
     const runtime = await runtimeFixture();

@@ -351,6 +351,18 @@ describe('TaskContractV1', () => {
     expect(isWriteAllowed(contract, 'src/secrets/key.ts')).toBe(false);
   });
 
+  it('rejects a catch-all forbidden scope that denies a concrete write target', () => {
+    expect(() =>
+      parseTaskContract({
+        ...contractFixture(),
+        write_scope: ['ptests.txt'],
+        forbidden_scope: ['**/*'],
+      }),
+    ).toThrow(
+      /forbidden_scope matches concrete write_scope target ptests\.txt; write_scope already denies every unlisted path/,
+    );
+  });
+
   it('detects symlink escapes for existing and not-yet-created descendants', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'contract-root-'));
     const outside = await mkdtemp(path.join(os.tmpdir(), 'contract-outside-'));
