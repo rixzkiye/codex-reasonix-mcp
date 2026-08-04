@@ -29,16 +29,6 @@ jobs:
       - name: Allow bwrap user namespaces (Ubuntu 24.04 AppArmor)
         if: runner.os == 'Linux'
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-      - name: Diagnostic — seatbelt profile probes (temporary)
-        if: runner.os == 'macOS'
-        run: |
-          set +e
-          PROF='(version 1)(allow default)(deny network*)(deny file-write* (subpath "/"))(deny file-link)'
-          for probe in "/usr/bin/test -f /etc/hosts" "/bin/cat /etc/hosts" "/bin/sleep 0" "$(command -v git) --version" "/bin/sh -c 'echo hi'" "echo builtin-ok"; do
-            echo "=== sandbox-exec -- $probe ==="
-            sandbox-exec -p "$PROF" -- $probe 2>&1
-            echo "exit=$?"
-          done
       - name: Install pnpm
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
