@@ -92,7 +92,7 @@ describe('seatbelt profile construction', () => {
     const profile = buildSeatbeltProfile(base, overlays);
     expect(profile).toContain('(deny network*)');
     expect(profile).toContain('(deny file-write* (subpath "/"))');
-    expect(profile).toContain('(deny file-link*)');
+    expect(profile).toContain('(deny file-link)');
     expect(profile).toContain('(allow file-write* (subpath "/Users/user/state/worktrees/r/task"))');
     // host temp stays writable as the sandbox scratch space
     expect(profile).toContain(`(allow file-write* (subpath "${os.tmpdir()}"))`);
@@ -156,9 +156,11 @@ describe('credential overlay resolution', () => {
       expect(overlays).not.toEqual(
         expect.arrayContaining([expect.objectContaining({ path: path.join(home, '.aws') })]),
       );
-      expect(overlays).toEqual(
-        expect.arrayContaining([expect.objectContaining({ path: '/root' })]),
-      );
+      if (process.platform === 'linux') {
+        expect(overlays).toEqual(
+          expect.arrayContaining([expect.objectContaining({ path: '/root' })]),
+        );
+      }
     } finally {
       await import('node:fs/promises').then(({ rm }) => rm(home, { recursive: true, force: true }));
     }

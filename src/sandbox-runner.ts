@@ -37,6 +37,11 @@ export interface SandboxedCommandOptions {
   repositoryRoot?: string;
   /** Additional read-only binds (e.g. the commit transaction dir for hooks). */
   readOnlyPaths?: readonly string[];
+  /**
+   * Canonical writable scratch path for seatbelt profiles (symlink-resolved
+   * host temp). Falls back to `os.tmpdir()` when omitted.
+   */
+  tmpDir?: string;
   argv: CommandOptions['argv'];
   cwd: string;
   timeoutMs?: number;
@@ -159,12 +164,12 @@ export function buildSeatbeltProfile(
   // Hardlink exfiltration: a hardlink to a hidden credential file created
   // inside the writable worktree resolves to the worktree path, bypassing
   // path-based read denies. Deny link creation outright.
-  lines.push('(deny file-link*)');
+  lines.push('(deny file-link)');
   lines.push(`(allow file-write* (subpath "${escapeProfilePath(options.worktree)}"))`);
   // Guaranteed writable scratch space: host temp stays writable so tools
   // honoring TMPDIR have a scratch dir (the rest of the filesystem is
-  // read-only or denied).
-  lines.push(`(allow file-write* (subpath "${escapeProfilePath(os.tmpdir())}"))`);
+  // read-only or denied). Callers pass the canonical (symlink-resolved) path.
+  lines.push(`(allow file-write* (subpath "${escapeProfilePath(options.tmpDir ?? os.tmpdir())}"))`);
   if (options.repositoryRoot) {
     lines.push(`(allow file-read* (subpath "${escapeProfilePath(options.repositoryRoot)}"))`);
   }
@@ -264,10 +269,21 @@ export async function runSandboxed(
         'refusing to execute repository content unsandboxed',
     );
   }
-  // Resolve symlinks (e.g. /tmp -> /private/tmp on macOS) so host-side paths
-  // match the paths visible inside the sandbox mounts.
-  const worktree = await realpath(options.worktree);
-  const cwd = await realpath(options.cwd);
+  // Resolve symlinks (e.g. /tmp -> /private/tmp, /var -> /private/var on
+  // macOS) so host-side paths match the paths visible inside the sandbox
+  // mounts and the canonical paths the kernel checks against seatbelt
+  // subpath filters.
+  const [worktree, cwd, tmpDir] = await Promise.all([
+    realpath(options.worktree),
+    realpath(options.cwd),
+    realpath(os.tmpdir()),
+  ]);
+  const repositoryRoot = options.repositoryRoot
+    ? await realpath(options.repositoryRoot)
+    : undefined;
+  const readOnlyPaths = options.readOnlyPaths
+    ? await Promise.all(options.readOnlyPaths.map((p) => realpath(p)))
+    : undefined;
   const overlays = await resolveCredentialOverlays();
   // Pin temp so tools honoring TMPDIR always have a writable scratch space:
   // bubblewrap exposes a private tmpfs at /tmp; seatbelt allows writes to
@@ -278,13 +294,21 @@ export async function runSandboxed(
     sandboxEnv.TMP = '/tmp';
     sandboxEnv.TEMP = '/tmp';
   }
+  const sandboxOptions: SandboxedCommandOptions = {
+    ...options,
+    worktree,
+    cwd,
+    repositoryRoot,
+    readOnlyPaths,
+    tmpDir,
+  };
   const argv: [string, ...string[]] =
     status.engine === 'bubblewrap'
-      ? buildBwrapArgv({ ...options, worktree, cwd }, overlays)
+      ? buildBwrapArgv(sandboxOptions, overlays)
       : [
           '/usr/bin/sandbox-exec',
           '-p',
-          buildSeatbeltProfile({ ...options, worktree, cwd }, overlays),
+          buildSeatbeltProfile(sandboxOptions, overlays),
           '--',
           ...options.argv,
         ];
